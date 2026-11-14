@@ -1,0 +1,29 @@
+# Environment Variables (Keep Private!)
+.env
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual Environments
+.venv/
+env/
+venv/
+ENV/
+
+# Logs & Runtime Data
+logs/
+*.log
+
+# Chart Snapshots
+charts/*.png
+
+# Data Cache
+data/signals_state.json
+data/*.db-journal
+
+# OS generated files
+.DS_Store
+Thumbs.db

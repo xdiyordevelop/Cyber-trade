@@ -1,0 +1,31 @@
+# Cyber Trade - Requirements
+# Lightweight, Linux container & free cloud friendly (Render, Koyeb, Railway)
+# Total RAM consumption: ~100MB - 140MB
+
+# Core High-Performance Data Processing
+polars>=1.15.0
+numpy>=1.26.0
+
+# Machine Learning & AI
+xgboost>=2.1.0
+scikit-learn>=1.4.0
+hmmlearn>=0.3.3
+joblib>=1.4.0
+
+# Async HTTP & Networking
+aiohttp>=3.9.0
+requests>=2.31.0
+
+# Free Market Data Providers
+yfinance>=0.2.40
+
+# Logging & Environment
+loguru>=0.7.2
+python-dotenv>=1.0.1
+pytz>=2024.1
+
+# Visual Chart Generation
+matplotlib>=3.8.0
+
+# LLM Conversational Agent (Gemini API)
+google-generativeai>=0.8.0
