@@ -72,10 +72,19 @@ class TelegramConfig:
 
 @dataclass
 class LLMConfig:
-    """AI Conversational Agent settings (Groq / DeepSeek-R1 / LLaMA 3.3)."""
-    groq_api_key: str = field(default_factory=lambda: os.getenv("GROQ_API_KEY", ""))
-    model_name: str = field(default_factory=lambda: os.getenv("AI_MODEL_NAME", "deepseek-r1-distill-llama-70b"))
+    """AI Conversational Agent settings (Gemini + Groq Hybrid Architecture)."""
+    # Google Gemini
     gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
+    gemini_primary_model: str = field(default_factory=lambda: os.getenv("AI_MODEL_PRIMARY", "gemini-3.8-flash"))
+    gemini_lite_model: str = field(default_factory=lambda: os.getenv("AI_MODEL_LITE", "gemini-3.5-flash-lite"))
+    gemini_complex_model: str = field(default_factory=lambda: os.getenv("AI_MODEL_COMPLEX", "gemini-3.1-pro-preview"))
+    
+    # Groq LPU Ultra-Fast Inference
+    groq_api_key: str = field(default_factory=lambda: os.getenv("GROQ_API_KEY", ""))
+    groq_model_name: str = field(default_factory=lambda: os.getenv("GROQ_MODEL_NAME", "llama-3.3-70b-versatile"))
+
+    # Legacy fallback field
+    model_name: str = field(default_factory=lambda: os.getenv("AI_MODEL_NAME", "llama-3.3-70b-versatile"))
 
 
 @dataclass

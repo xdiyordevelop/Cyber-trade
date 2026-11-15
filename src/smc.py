@@ -774,13 +774,13 @@ class SMCAnalyzer:
             return None, None
 
         # Get ATR for dynamic SL/TP calculation
-        # FIX: Realistic ATR fallback for XAUUSD (~$12-15 typical)
+        # Universal fallback based on asset price percentage (0.5%)
         if "atr" in df.columns:
             atr = latest["atr"].item()
-            if atr is None or atr <= 0 or atr > current_close * 0.05:  # Sanity check
-                atr = 12.0  # Default realistic ATR for XAUUSD
+            if atr is None or atr <= 0 or atr > current_close * 0.05:
+                atr = current_close * 0.005
         else:
-            atr = 12.0  # Default realistic ATR for XAUUSD
+            atr = current_close * 0.005
 
         # SL: 1.5-2 ATR distance (protects against noise)
         min_sl_distance = 1.5 * atr

@@ -1,22 +1,15 @@
 """
-Trading Session Filter
-======================
-Filter trades based on market sessions and optimal trading hours.
-Timezone: WIB (Waktu Indonesia Barat) - GMT+7 for Batam/Jakarta.
+Cyber Trade - Trading Session Filter
+====================================
+Filter signals based on global market sessions, optimal liquidity hours,
+and prevent trades during wide-spread rollover and weekend market closes.
 
-Optimal Trading Hours for XAUUSD:
-- London-NY Overlap: 20:00 - 00:00 WIB (BEST)
-- London Session: 15:00 - 00:00 WIB
-- NY Session: 20:00 - 05:00 WIB
-
-Dangerous Zones:
-- Rollover/Spread Wide: 04:00 - 06:00 WIB
-- Low Liquidity: 00:00 - 04:00 WIB
-- Friday Close: After 23:00 WIB Friday
+Timezone: Asia/Tashkent (GMT+5) and UTC.
+Optimized specifically for Signal Broadcasting (NOT auto-trading).
 """
 
 from datetime import datetime, time, timedelta, timezone
-from typing import Tuple, Dict, Optional
+from typing import Tuple, Dict, Optional, Any
 from dataclasses import dataclass
 from enum import Enum
 from loguru import logger
@@ -36,197 +29,116 @@ class TradingSession(Enum):
 
 @dataclass
 class SessionConfig:
-    """Session trading configuration."""
+    """Session configuration for signal generation."""
     name: str
-    start_hour: int  # WIB
+    start_hour: int      # Tashkent time (GMT+5)
     start_minute: int
-    end_hour: int    # WIB
+    end_hour: int        # Tashkent time (GMT+5)
     end_minute: int
-    volatility: str  # "low", "medium", "high", "extreme"
-    allow_trading: bool
-    position_size_multiplier: float
+    volatility: str      # "low", "medium", "high", "extreme"
+    allow_signals: bool
+    quality_score: int   # 0 to 100 liquidity / reliability rating
 
 
 class SessionFilter:
     """
-    Trading session filter for optimal trading hours.
-
-    Configured for XAUUSD aggressive trading during London/NY overlap.
-    All times in WIB (GMT+7).
+    Session filter and market schedule sentinel.
+    Controls whether market conditions and sessions are favorable for signals.
     """
 
     def __init__(
         self,
-        timezone: str = "Asia/Tashkent",  # Tashkent (GMT+5)
-        aggressive_mode: bool = True,
+        timezone_str: str = "Asia/Tashkent",
     ):
-        self.tz = pytz.timezone(timezone)
-        self.aggressive_mode = aggressive_mode
+        self.tz = pytz.timezone(timezone_str)
 
-        # Define trading windows (Tashkent Time GMT+5)
+        # Standard trading sessions in Tashkent Time (GMT+5)
         self.sessions = {
-            # Main sessions
-            TradingSession.SYDNEY: SessionConfig(
-                name="Sidney (Tinch okeani)",
-                start_hour=2, start_minute=0,
-                end_hour=11, end_minute=0,
-                volatility="low",
-                allow_trading=True,
-                position_size_multiplier=0.5,
+            # London - NY Overlap (The Golden Hours for XAUUSD & Markets)
+            TradingSession.OVERLAP_LONDON_NY: SessionConfig(
+                name="London - Nyu-York Kesishuvi (Oltin Davr)",
+                start_hour=18, start_minute=0,
+                end_hour=22, end_minute=0,
+                volatility="extreme",
+                allow_signals=True,
+                quality_score=95,
             ),
-            TradingSession.TOKYO: SessionConfig(
-                name="Osiyo / Tokio",
-                start_hour=5, start_minute=0,
+            # Tokyo - London Overlap
+            TradingSession.OVERLAP_TOKYO_LONDON: SessionConfig(
+                name="Tokio - London Kesishuvi",
+                start_hour=13, start_minute=0,
                 end_hour=14, end_minute=0,
-                volatility="medium",
-                allow_trading=True,
-                position_size_multiplier=0.7,
+                volatility="high",
+                allow_signals=True,
+                quality_score=80,
             ),
+            # London Session
             TradingSession.LONDON: SessionConfig(
                 name="London (Yevropa)",
                 start_hour=13, start_minute=0,
                 end_hour=22, end_minute=0,
                 volatility="high",
-                allow_trading=True,
-                position_size_multiplier=1.0,
+                allow_signals=True,
+                quality_score=90,
             ),
+            # New York Session
             TradingSession.NEW_YORK: SessionConfig(
                 name="Nyu-York (AQSH)",
                 start_hour=18, start_minute=0,
-                end_hour=23, end_minute=59,
+                end_hour=3, end_minute=0,
                 volatility="extreme",
-                allow_trading=True,
-                position_size_multiplier=1.0,
+                allow_signals=True,
+                quality_score=90,
             ),
-            # Overlap sessions (BEST TIMES)
-            TradingSession.OVERLAP_TOKYO_LONDON: SessionConfig(
-                name="Osiyo - London Kesishuvi",
-                start_hour=13, start_minute=0,
+            # Tokyo Session
+            TradingSession.TOKYO: SessionConfig(
+                name="Osiyo / Tokio",
+                start_hour=5, start_minute=0,
                 end_hour=14, end_minute=0,
-                volatility="high",
-                allow_trading=True,
-                position_size_multiplier=0.8,
+                volatility="medium",
+                allow_signals=True,
+                quality_score=65,
             ),
-            TradingSession.OVERLAP_LONDON_NY: SessionConfig(
-                name="London - Nyu-York Overlap (Oltin Davr)",
-                start_hour=18, start_minute=0,
-                end_hour=22, end_minute=0,
-                volatility="extreme",
-                allow_trading=True,
-                position_size_multiplier=1.2,
+            # Sydney Session
+            TradingSession.SYDNEY: SessionConfig(
+                name="Sidney (Tinch okeani)",
+                start_hour=2, start_minute=0,
+                end_hour=11, end_minute=0,
+                volatility="low",
+                allow_signals=True,
+                quality_score=50,
             ),
         }
 
-        # Danger zones (WIB)
+        # Danger zones (Tashkent Time GMT+5): Wide spread, rollover, bank clearing
         self.danger_zones = [
-            # Rollover - spread extremely wide
-            {"name": "Rollover", "start": (4, 0), "end": (6, 0), "reason": "Spread melebar saat rollover"},
-            # Low liquidity
-            {"name": "Dead Zone", "start": (0, 0), "end": (4, 0), "reason": "Likuiditas rendah, spread tinggi"},
+            # Daily Rollover (03:00 - 04:15 Tashkent / 22:00 - 23:15 UTC)
+            {"name": "Bank Rollover", "start": (3, 0), "end": (4, 15), "reason": "Banklararo kliring va spred kengayishi davri"},
+            # Extreme Low Liquidity dead zone (04:15 - 05:00 Tashkent)
+            {"name": "Dead Zone", "start": (4, 15), "end": (5, 0), "reason": "Juda past likvidlik va manipulyatsiya xavfi"},
         ]
 
-        # High impact news times to avoid (typical release times in WIB)
-        self.news_blackout_times = [
-            # NFP - First Friday of month
-            {"event": "NFP", "hour": 19, "minute": 30, "buffer_before": 15, "buffer_after": 30},
-            # Fed Interest Rate
-            {"event": "FOMC", "hour": 1, "minute": 0, "buffer_before": 15, "buffer_after": 45},
-            # US CPI
-            {"event": "CPI", "hour": 19, "minute": 30, "buffer_before": 15, "buffer_after": 30},
-        ]
-
-    def get_current_time_wib(self) -> datetime:
-        """Get current time in WIB."""
+    def get_current_time_tashkent(self) -> datetime:
+        """Get current local time in Tashkent (GMT+5)."""
         return datetime.now(self.tz)
 
-    def get_current_session(self) -> Tuple[TradingSession, SessionConfig]:
-        """
-        Get the current trading session.
-
-        Returns highest priority session if multiple overlap.
-        Priority: Overlap > London/NY > Tokyo > Sydney > Off Hours
-        """
-        now = self.get_current_time_wib()
-
-        # Check weekend first (Saturday/Sunday market closed)
-        if self.is_weekend():
-            return TradingSession.OFF_HOURS, SessionConfig(
-                name="Weekend (Market Closed)",
-                start_hour=0, start_minute=0,
-                end_hour=23, end_minute=59,
-                volatility="none",
-                allow_trading=False,
-                position_size_multiplier=0.0,
-            )
-
-        hour = now.hour
-        minute = now.minute
-        current_time = hour * 60 + minute
-
-        # Check overlaps first (highest priority)
-        if 20 * 60 <= current_time <= 24 * 60:  # 20:00 - 00:00
-            return TradingSession.OVERLAP_LONDON_NY, self.sessions[TradingSession.OVERLAP_LONDON_NY]
-
-        if 15 * 60 <= current_time <= 16 * 60:  # 15:00 - 16:00
-            return TradingSession.OVERLAP_TOKYO_LONDON, self.sessions[TradingSession.OVERLAP_TOKYO_LONDON]
-
-        # Check main sessions
-        for session, config in self.sessions.items():
-            if session in [TradingSession.OVERLAP_LONDON_NY, TradingSession.OVERLAP_TOKYO_LONDON]:
-                continue
-
-            start = config.start_hour * 60 + config.start_minute
-            end = config.end_hour * 60 + config.end_minute
-
-            if start <= current_time <= end:
-                return session, config
-
-        # Off hours
-        return TradingSession.OFF_HOURS, SessionConfig(
-            name="Off Hours",
-            start_hour=0, start_minute=0,
-            end_hour=0, end_minute=0,
-            volatility="low",
-            allow_trading=False,
-            position_size_multiplier=0.0,
-        )
-
-    def is_danger_zone(self) -> Tuple[bool, str]:
-        """Check if current time is in a danger zone."""
-        now = self.get_current_time_wib()
-        hour = now.hour
-        minute = now.minute
-        current_time = hour * 60 + minute
-
-        for zone in self.danger_zones:
-            start = zone["start"][0] * 60 + zone["start"][1]
-            end = zone["end"][0] * 60 + zone["end"][1]
-
-            if start <= current_time < end:
-                return True, zone["reason"]
-
-        return False, ""
-
-    def is_friday_close(self) -> bool:
-        """Check if approaching Friday market close (Saturday 02:30 Tashkent / 21:30 UTC)."""
-        now_utc = datetime.now(timezone.utc)
-        # Friday after 21:30 UTC (approaching 22:00 close)
-        if now_utc.weekday() == 4 and (now_utc.hour > 21 or (now_utc.hour == 21 and now_utc.minute >= 30)):
-            return True
-        return False
+    def is_crypto_symbol(self, symbol: str) -> bool:
+        """Check if symbol is 24/7 crypto."""
+        sym = symbol.upper()
+        return any(c in sym for c in ["BTC", "ETH", "SOL", "USDT", "BNB", "XRP"])
 
     def is_weekend(self) -> bool:
         """
         Check if traditional market (Gold / Forex) is closed for the weekend.
-        Global Market Close: Friday 22:00 UTC (17:00 EST / Shanba 03:00 Toshkent).
-        Global Market Open: Sunday 22:00 UTC (17:00 EST / Dushanba 03:00 Toshkent).
+        Global Market Close: Friday 22:00 UTC (Saturday 03:00 Tashkent).
+        Global Market Open: Sunday 22:00 UTC (Monday 03:00 Tashkent).
         """
         now_utc = datetime.now(timezone.utc)
         weekday = now_utc.weekday()
         # Friday after 22:00 UTC
         if weekday == 4 and now_utc.hour >= 22:
             return True
-        # Saturday all day
+        # Saturday all day (UTC)
         if weekday == 5:
             return True
         # Sunday before 22:00 UTC
@@ -234,113 +146,128 @@ class SessionFilter:
             return True
         return False
 
-    def can_trade(self) -> Tuple[bool, str, float]:
+    def is_friday_close(self) -> bool:
+        """Check if approaching Friday market close (Friday 21:00 UTC / Saturday 02:00 Tashkent)."""
+        now_utc = datetime.now(timezone.utc)
+        if now_utc.weekday() == 4 and now_utc.hour >= 21:
+            return True
+        return False
+
+    def is_danger_zone(self) -> Tuple[bool, str]:
+        """Check if current Tashkent time falls into high-spread rollover/dead zones."""
+        now = self.get_current_time_tashkent()
+        hour = now.hour
+        minute = now.minute
+        current_minutes = hour * 60 + minute
+
+        for zone in self.danger_zones:
+            start_min = zone["start"][0] * 60 + zone["start"][1]
+            end_min = zone["end"][0] * 60 + zone["end"][1]
+
+            if start_min <= current_minutes < end_min:
+                return True, zone["reason"]
+
+        return False, ""
+
+    def get_current_session(self) -> Tuple[TradingSession, SessionConfig]:
         """
-        Check if trading is allowed right now.
+        Get the current trading session in Tashkent time.
+        Priority: London-NY Overlap > Tokyo-London Overlap > London > NY > Tokyo > Sydney > Off Hours.
+        """
+        if self.is_weekend():
+            return TradingSession.OFF_HOURS, SessionConfig(
+                name="Dam olish kuni (Bozor yopiq)",
+                start_hour=0, start_minute=0,
+                end_hour=23, end_minute=59,
+                volatility="none",
+                allow_signals=False,
+                quality_score=0,
+            )
+
+        now = self.get_current_time_tashkent()
+        hour = now.hour
+        minute = now.minute
+        current_minutes = hour * 60 + minute
+
+        # 1. Check London - NY Overlap (18:00 - 22:00 Tashkent)
+        if 18 * 60 <= current_minutes < 22 * 60:
+            return TradingSession.OVERLAP_LONDON_NY, self.sessions[TradingSession.OVERLAP_LONDON_NY]
+
+        # 2. Check Tokyo - London Overlap (13:00 - 14:00 Tashkent)
+        if 13 * 60 <= current_minutes < 14 * 60:
+            return TradingSession.OVERLAP_TOKYO_LONDON, self.sessions[TradingSession.OVERLAP_TOKYO_LONDON]
+
+        # 3. Check London Session (13:00 - 22:00 Tashkent)
+        if 13 * 60 <= current_minutes < 22 * 60:
+            return TradingSession.LONDON, self.sessions[TradingSession.LONDON]
+
+        # 4. Check New York Session (18:00 - 03:00 Tashkent, crosses midnight)
+        if current_minutes >= 18 * 60 or current_minutes < 3 * 60:
+            return TradingSession.NEW_YORK, self.sessions[TradingSession.NEW_YORK]
+
+        # 5. Check Tokyo Session (05:00 - 14:00 Tashkent)
+        if 5 * 60 <= current_minutes < 14 * 60:
+            return TradingSession.TOKYO, self.sessions[TradingSession.TOKYO]
+
+        # 6. Check Sydney Session (02:00 - 11:00 Tashkent)
+        if 2 * 60 <= current_minutes < 11 * 60:
+            return TradingSession.SYDNEY, self.sessions[TradingSession.SYDNEY]
+
+        # Off hours / Quiet night
+        return TradingSession.OFF_HOURS, SessionConfig(
+            name="Tinch Tungi Soatlar (Osiyo arafasi)",
+            start_hour=3, start_minute=0,
+            end_hour=5, end_minute=0,
+            volatility="low",
+            allow_signals=True,
+            quality_score=40,
+        )
+
+    def is_signal_allowed(self, symbol: str) -> Tuple[bool, str]:
+        """
+        Primary gatekeeper: Determines whether a signal is allowed for a given symbol right now.
 
         Returns:
-            Tuple of (can_trade, reason, position_multiplier)
+            Tuple of (is_allowed: bool, reason: str)
         """
-        now = self.get_current_time_wib()
+        is_crypto = self.is_crypto_symbol(symbol)
 
-        # Check weekend
-        if self.is_weekend():
-            return False, "Market tutup (weekend)", 0.0
+        # 1. Non-crypto: Traditional weekend check
+        if not is_crypto and self.is_weekend():
+            return False, "Oltin/Forex birjasi dam olish kunlari sababli yopiq."
 
-        # Check Friday close
-        if self.is_friday_close():
-            return False, "Mendekati penutupan Jumat - hindari gap weekend", 0.0
+        # 2. Non-crypto: Friday close approach
+        if not is_crypto and self.is_friday_close():
+            return False, "Juma birja yopilishi arafasi — hafta oxiri narx bo'shliqlari (Gap) xavfi tufayli signallar to'xtatildi."
 
-        # Check danger zones
-        is_danger, danger_reason = self.is_danger_zone()
-        if is_danger:
-            return False, f"Zona bahaya: {danger_reason}", 0.0
+        # 3. Non-crypto: Rollover & dead zones
+        if not is_crypto:
+            is_danger, danger_reason = self.is_danger_zone()
+            if is_danger:
+                return False, f"Xavfli vaqt ({danger_reason}) — spred yuqori bo'lgani uchun signal bloklandi."
 
-        # Get current session
-        session, config = self.get_current_session()
+        # Crypto is 24/7 liquid
+        if is_crypto:
+            return True, "Kriptovalyuta bozori 24/7 faol."
 
-        if not config.allow_trading:
-            return False, f"Trading tidak diizinkan saat {config.name}", 0.0
+        # Session validation
+        session_enum, session_cfg = self.get_current_session()
+        return True, f"Bozor ochiq ({session_cfg.name})"
 
-        # In aggressive mode, allow medium+ volatility + Sydney (proven profitable)
-        if self.aggressive_mode:
-            # Sydney session is ALLOWED - backtest shows 62% WR, $5,934 profit
-            if session == TradingSession.SYDNEY:
-                return True, f"Trading OK - {config.name} (SAFE MODE: 0.5x lot)", config.position_size_multiplier
-            # Only block low volatility sessions
-            if config.volatility not in ["medium", "high", "extreme"]:
-                return False, f"Mode agresif: tunggu sesi {config.name} (volatilitas {config.volatility})", config.position_size_multiplier
-
-        return True, f"Trading OK - {config.name} ({config.volatility} volatility)", config.position_size_multiplier
-
-    def get_next_trading_window(self) -> Dict:
-        """Get when the next optimal trading window starts."""
-        now = self.get_current_time_wib()
-        current_hour = now.hour
-
-        # Find next London-NY overlap
-        if current_hour < 20:
-            # Today at 20:00
-            next_window = now.replace(hour=20, minute=0, second=0, microsecond=0)
-            hours_until = 20 - current_hour
-        else:
-            # Tomorrow at 20:00
-            next_window = (now + timedelta(days=1)).replace(hour=20, minute=0, second=0, microsecond=0)
-            hours_until = 24 - current_hour + 20
-
-        return {
-            "next_window": next_window.strftime("%Y-%m-%d %H:%M WIB"),
-            "hours_until": hours_until,
-            "session": "London-NY Overlap",
-            "is_weekend": self.is_weekend(),
-        }
-
-    def get_status_report(self) -> Dict:
+    def get_status_report(self) -> Dict[str, Any]:
         """Get comprehensive trading session status."""
-        now = self.get_current_time_wib()
+        now = self.get_current_time_tashkent()
         session, config = self.get_current_session()
-        can_trade, reason, multiplier = self.can_trade()
         is_danger, danger_reason = self.is_danger_zone()
 
         return {
-            "current_time": now.strftime("%Y-%m-%d %H:%M:%S WIB"),
+            "current_time_tashkent": now.strftime("%Y-%m-%d %H:%M:%S"),
             "day_of_week": now.strftime("%A"),
             "current_session": config.name,
             "volatility": config.volatility,
-            "can_trade": can_trade,
-            "reason": reason,
-            "position_multiplier": multiplier,
+            "quality_score": config.quality_score,
+            "is_weekend": self.is_weekend(),
+            "is_friday_close": self.is_friday_close(),
             "is_danger_zone": is_danger,
             "danger_reason": danger_reason,
-            "is_friday_close": self.is_friday_close(),
-            "is_weekend": self.is_weekend(),
-            "next_window": self.get_next_trading_window(),
         }
-
-
-# Convenience function
-def create_wib_session_filter(aggressive: bool = True) -> SessionFilter:
-    """Create session filter for WIB timezone."""
-    return SessionFilter(
-        timezone="Asia/Jakarta",
-        aggressive_mode=aggressive,
-    )
-
-
-if __name__ == "__main__":
-    # Test session filter
-    sf = create_wib_session_filter(aggressive=True)
-
-    print("\n" + "=" * 60)
-    print("TRADING SESSION STATUS")
-    print("=" * 60)
-
-    status = sf.get_status_report()
-    for key, value in status.items():
-        print(f"{key}: {value}")
-
-    print("\n" + "=" * 60)
-    can_trade, reason, multiplier = sf.can_trade()
-    print(f"Can Trade: {can_trade}")
-    print(f"Reason: {reason}")
-    print(f"Position Multiplier: {multiplier}")

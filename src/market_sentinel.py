@@ -52,8 +52,12 @@ class MarketSentinel:
     async def check_news_alerts(self):
         """Check for high-impact economic news coming up in 15-30 minutes."""
         try:
-            events = await self.news_sentinel.fetch_calendar_events()
+            events, is_online, err_msg = await self.news_sentinel.fetch_calendar_events()
             now_utc = datetime.now(timezone.utc)
+
+            # Check if active trades exist during upcoming news
+            has_active_trades = bool(self.signal_tracker and self.signal_tracker.active_signals)
+            active_symbols = [f"#{s.symbol}" for s in self.signal_tracker.active_signals] if has_active_trades else []
 
             for ev in events:
                 if ev.impact != "High":
@@ -62,11 +66,17 @@ class MarketSentinel:
                 diff_minutes = (ev.time_utc - now_utc).total_seconds() / 60.0
                 event_key = f"{ev.country}_{ev.title}_{ev.time_utc.strftime('%Y%m%d_%H%M')}"
 
-                # Alert if within 15 to 35 minutes before the event
+                # Alert if within 10 to 35 minutes before the event
                 if 10.0 <= diff_minutes <= 35.0 and event_key not in self._alerted_news:
                     self._alerted_news.add(event_key)
-                    # Convert event time to Tashkent time
                     ev_uzb = ev.time_utc.astimezone(self.tashkent_tz).strftime("%H:%M")
+
+                    active_trade_warning = ""
+                    if has_active_trades:
+                        active_trade_warning = (
+                            f"\n⚡ <b>OCHIQ SIGNALLAR DIQQATIGA ({', '.join(active_symbols)}):</b>\n"
+                            f"Yangilik oldidan Stop-Lossni Kirish narxiga (0 ga) ko'chiring yoki foydani fiksatsiya qiling!\n"
+                        )
 
                     msg = (
                         f"🚨 <b>DIQQAT: MUHIM IQTISODIY YANGILIK YAQINLASHMOQDA!</b>\n"
@@ -75,10 +85,9 @@ class MarketSentinel:
                         f"🕒 <b>Chiqish Vaqti:</b> <b>{ev_uzb}</b> (taxminan {int(diff_minutes)} daqiqa qoldi)\n"
                         f"📊 <b>Kutilma (Forecast):</b> <code>{ev.forecast or 'Nomaʼlum'}</code>\n"
                         f"📉 <b>Oldingi ko'rsatkich:</b> <code>{ev.previous or 'Nomaʼlum'}</code>\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"⚠️ <b>Tavsiya:</b> Yuqori narx tebranishlari (volatillik) va spred kengayishi kutilmoqda.\n"
-                        f"• Yangilik chiqishi arafasida yangi bitimlarga kirmang.\n"
-                        f"• Ochiq foydali savdolaringiz bo'lsa, Stop-Lossni Kirish narxiga (0 ga) ko'chiring!"
+                        f"━━━━━━━━━━━━━━━━━━━━━━{active_trade_warning}\n"
+                        f"⚠️ <b>Tavsiya:</b> Yuqori narx tebranishlari (volatillik) kutilmoqda. "
+                        f"Yangilik o'tib olguncha yangi signallar vaqtincha to'xtatildi."
                     )
                     logger.warning(f"Broadcasting High-Impact News Alert: {ev.title} ({ev.country})")
                     await self.bot.broadcast_alert(msg)

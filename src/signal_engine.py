@@ -1,21 +1,27 @@
 """
-Cyber Trade - Master Signal Engine (AI Confluence Council)
-==========================================================
-Coordinates all analytical agents:
-1. SMC Analyzer (Order Blocks, FVG, BOS, Liquidity Sweeps)
-2. Feature Engineering (37 technical features)
-3. HMM Market Regime Detector (Trending / Ranging / Volatile)
-4. XGBoost AI Model (Calibrated BUY/SELL probability)
-5. Session Filter (London / NY / Tokyo sessions)
-6. Macro Agent (DXY Dollar correlation boost)
-7. News Sentinel (Economic calendar danger shield)
-
-Only produces an A+ Signal when all agents agree on high confluence!
+Cyber Trade - Master Signal Engine & Multi-Timeframe Confluence Auditor
+=======================================================================
+Coordinates all analytical agents with strict Quality Control and MTF Analysis:
+1. Multi-Timeframe (MTF) Engine:
+   - H4: Macro Direction (Overall 4H trend & institutional bias)
+   - H1: Market Structure (1H SMC Structure, BOS, OB)
+   - M15: Entry Confirmation (M15 Trigger, FVG retest, Liquidity sweep)
+   - Conflict Detection: Transparently reveals time-frame divergences!
+2. Data Quality & Freshness Sentinel:
+   - Source validation, timestamp freshness (blocks stale data > 45m on active markets),
+   - Candle close status and OHLC integrity verification.
+3. Smart Money Concepts (SMC):
+   - Order Blocks, Fair Value Gaps, Swing Points, BOS, CHoCH.
+4. HMM Market Regime Detector (Trending / Ranging / Volatile).
+5. XGBoost Machine Learning Probabilities & Dynamic Thresholds.
+6. Macro DXY Dollar Correlation (+12% confluence).
+7. High-Impact News Sentinel & Economic Calendar Guard.
+8. Diagnostic Audit Engine (/why command).
 """
 
 import uuid
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Tuple
 import polars as pl
@@ -27,11 +33,12 @@ from src.feature_eng import FeatureEngineer
 from src.ml_model import TradingModel
 from src.regime_detector import MarketRegimeDetector, MarketRegime
 from src.session_filter import SessionFilter
-from src.dynamic_confidence import DynamicConfidenceManager
+from src.dynamic_confidence import DynamicConfidenceManager, SignalGrade
 from src.macro_agent import MacroAgent, MacroReport
 from src.news_agent import NewsSentinel, NewsStatus
 from src.chart_generator import ChartGenerator
 from src.signal_tracker import ActiveSignal
+from src.utils import resample_ohlcv, validate_ohlcv_data
 
 
 @dataclass
@@ -40,6 +47,8 @@ class GeneratedSignal:
     symbol: str
     timeframe: str
     direction: str              # "BUY" or "SELL"
+    grade: str                  # "🏆 A+ (SNIPER)" or "⚡ A (TREND MOMENTUM)"
+    order_type: str             # "MARKET" or "BUY LIMIT" / "SELL LIMIT"
     entry_price: float
     stop_loss: float
     take_profit_1: float
@@ -52,6 +61,9 @@ class GeneratedSignal:
     macro_alignment: str
     news_status: str
     confluence_reasons: List[str]
+    lot_1k: float = 0.01
+    lot_5k: float = 0.05
+    lot_10k: float = 0.10
     chart_image_path: Optional[str] = None
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -70,18 +82,21 @@ class GeneratedSignal:
             ai_confidence=self.ai_confidence,
         )
 
-    def format_telegram_message(self) -> str:
-        """Format a rich, professional Telegram alert message."""
-        dir_emoji = "🟢 <b>STRONG BUY</b>" if self.direction == "BUY" else "🔴 <b>STRONG SELL</b>"
-        arrow = "📈" if self.direction == "BUY" else "📉"
+    def to_telegram_message(self) -> str:
+        """Format signal card for Telegram broadcast."""
+        icon = "🟢" if self.direction == "BUY" else "🔴"
+        grade_badge = f"<b>{self.grade}</b>"
+        unit_label = "lot" if "XAU" in self.symbol.upper() else ("BTC" if "BTC" in self.symbol.upper() else "lot")
 
-        reasons_bullet = "\n".join([f"  • {r}" for r in self.confluence_reasons])
+        reasons_bullet = "\n".join([f"  • {r}" for r in self.confluence_reasons[:6]])
 
         msg = (
-            f"⚡ <b>CYBER TRADE — AI SIGNAL ALERT</b> ⚡\n"
+            f"⚡ <b>CYBER TRADE — AI TRADING SIGNAL</b> ⚡\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🪙 <b>Aktiv:</b> #{self.symbol} ({self.timeframe})\n"
-            f"🎯 <b>Yo'nalish:</b> {dir_emoji} {arrow}\n"
+            f"{icon} <b>Aktiv:</b> #{self.symbol} ({self.timeframe})\n"
+            f"🎯 <b>Yo'nalish:</b> <b>{self.direction}</b>\n"
+            f"🎖️ <b>Signal Sifati:</b> {grade_badge}\n"
+            f"📌 <b>Buyurtma Turi:</b> <code>{self.order_type}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"📥 <b>Kirish narxi (Entry):</b> <code>{self.entry_price:.2f}</code>\n"
             f"🛑 <b>Stop-Loss (SL):</b> <code>{self.stop_loss:.2f}</code>\n"
@@ -90,6 +105,11 @@ class GeneratedSignal:
             f"🎯 <b>Take-Profit 3:</b> <code>{self.take_profit_3:.2f}</code> (1:4.0)\n"
             f"⚖️ <b>Risk:Reward:</b> <code>1:{self.risk_reward:.1f}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📊 <b>Tavsiya Etilgan Lot (1% Xavf / Risk):</b>\n"
+            f"  • $1,000 depozit: <code>{self.lot_1k:.2f} {unit_label}</code>\n"
+            f"  • $5,000 depozit: <code>{self.lot_5k:.2f} {unit_label}</code>\n"
+            f"  • $10,000 depozit: <code>{self.lot_10k:.2f} {unit_label}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🧠 <b>AI Ishonch:</b> <code>{self.ai_confidence*100:.1f}%</code>\n"
             f"🌊 <b>Bozor Rejimi:</b> {self.regime}\n"
             f"🕒 <b>Sessiya:</b> {self.session}\n"
@@ -97,7 +117,7 @@ class GeneratedSignal:
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🔍 <b>Texnik & SMC Tasdiqlar:</b>\n{reasons_bullet}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"⚠️ <i>Eslatma: TP1 ga yetganda Stop-Lossni 0 ga (Breakeven) suring!</i>"
+            f"⚠️ <i>Qoida: TP1 ga yetganda Stop-Lossni Kirish narxiga (0 ga) suring!</i>"
         )
         return msg
 
@@ -106,61 +126,58 @@ SIGNAL_MODES = {
     "aggressive": {
         "id": "aggressive",
         "name": "⚡ Agressiv (Scalp 50%+)",
-        "threshold": 0.52,
+        "threshold": 0.50,
         "min_rr": 1.5,
-        "desc": "Ko'p signallar, tezkor kirish-chiqishlar (50-55%+)",
+        "desc": "Ko'proq signallar, tezkor kirish-chiqishlar (50%+)",
     },
     "standard": {
         "id": "standard",
-        "name": "⚖️ Standart (Balansli 60%+)",
-        "threshold": 0.60,
-        "min_rr": 2.0,
-        "desc": "Oltin o'rtalik, me'yordagi filtr va ishonchlilik (60%+)",
+        "name": "⚖️ Standart (Balansli 58%+)",
+        "threshold": 0.58,
+        "min_rr": 1.8,
+        "desc": "Oltin o'rtalik: A+ va sifatli Trend signallar (58%+)",
     },
     "conservative": {
         "id": "conservative",
-        "name": "🛡️ Konservativ (Sniper 70%+)",
-        "threshold": 0.70,
-        "min_rr": 2.5,
-        "desc": "Faqat eng yuqori ishonchli A+ signallar (70%+)",
+        "name": "🛡️ Konservativ (Sniper 68%+)",
+        "threshold": 0.68,
+        "min_rr": 2.2,
+        "desc": "Faqat eng yuqori ishonchli A+ Sniper signallar (68%+)",
     },
 }
 
 
 class SignalEngine:
     """
-    Master Confluence Engine that powers Cyber Trade.
+    Master Confluence Engine that powers Cyber Trade with MTF and Data Freshness.
     """
 
     def __init__(
         self,
         xgboost_path: str = "models/xgboost_model.pkl",
         hmm_path: str = "models/hmm_regime.pkl",
-        min_risk_reward: float = 2.0,
+        min_risk_reward: float = 1.8,
         settings_file: str = "data/bot_settings.json",
     ):
         self.settings_file = Path(settings_file)
         self.settings_file.parent.mkdir(parents=True, exist_ok=True)
         self.min_rr = min_risk_reward
 
-        # 1. Feature Engineer & SMC Analyzer
+        # Analytical agents
         self.feature_eng = FeatureEngineer()
         self.smc = SMCAnalyzer(swing_length=5, ob_lookback=10)
-
-        # 2. Machine Learning Model
         self.ml_model = TradingModel().load(xgboost_path)
-
-        # 3. Regime Detector
         self.regime_detector = MarketRegimeDetector().load(hmm_path)
-
-        # 4. Filters & Macro
-        self.session_filter = SessionFilter(timezone="UTC")
-        self.dynamic_confidence = DynamicConfidenceManager(base_threshold=0.60)
+        self.session_filter = SessionFilter(timezone_str="Asia/Tashkent")
+        self.dynamic_confidence = DynamicConfidenceManager(base_threshold=0.58)
         self.macro_agent = MacroAgent()
         self.news_sentinel = NewsSentinel()
         self.chart_generator = ChartGenerator()
 
-        # Load saved mode
+        # Cache of latest diagnostic audits for /why command
+        self.latest_diagnostics: Dict[str, Dict[str, Any]] = {}
+
+        # Load active mode
         self.active_mode = self._load_mode()
         self.apply_mode(self.active_mode)
 
@@ -182,7 +199,6 @@ class SignalEngine:
         cfg = SIGNAL_MODES[mode_id]
         self.ml_model.confidence_threshold = cfg["threshold"]
         self.min_rr = cfg["min_rr"]
-        # Save to file
         try:
             import json
             with open(self.settings_file, "w") as f:
@@ -191,6 +207,199 @@ class SignalEngine:
             logger.error(f"Failed to save mode settings: {e}")
         logger.info(f"Signal Mode set to: {cfg['name']} (Threshold: {cfg['threshold']}, Min R:R: {cfg['min_rr']})")
 
+    # -------------------------------------------------------------------------
+    # 1. Data Quality & Freshness Sentinel
+    # -------------------------------------------------------------------------
+    def check_data_quality(self, symbol: str, df: pl.DataFrame) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        Verify source, timestamp age, candle close status, and OHLC integrity.
+        Blocks signal generation on stale data.
+        """
+        if df is None or len(df) < 50:
+            return False, "Shamlar soni yetarli emas (kamida 50 ta kerak)", {"status": "INSUFFICIENT_BARS"}
+
+        # Structure check
+        is_struct_valid, issues = validate_ohlcv_data(df)
+        if not is_struct_valid:
+            return False, f"Ma'lumotlar strukturasida xatolik: {', '.join(issues[:2])}", {"issues": issues}
+
+        # Timestamp and freshness
+        last_time_val = df["time"][-1]
+        now_utc = datetime.now(timezone.utc)
+
+        # Convert to datetime if string or timestamp
+        if isinstance(last_time_val, str):
+            try:
+                last_dt = datetime.fromisoformat(last_time_val.replace("Z", "+00:00"))
+            except Exception:
+                last_dt = now_utc
+        elif isinstance(last_time_val, datetime):
+            last_dt = last_time_val if last_time_val.tzinfo else last_time_val.replace(tzinfo=timezone.utc)
+        else:
+            last_dt = now_utc
+
+        age_seconds = (now_utc - last_dt).total_seconds()
+        age_minutes = age_seconds / 60.0
+
+        is_crypto = any(c in symbol.upper() for c in ["BTC", "ETH", "SOL", "USDT"])
+        is_weekend = self.session_filter.is_weekend()
+
+        meta = {
+            "source": "Yahoo Finance Direct / Live",
+            "last_candle_time": last_dt.strftime("%Y-%m-%d %H:%M UTC"),
+            "age_minutes": round(age_minutes, 1),
+            "is_weekend": is_weekend,
+            "is_crypto": is_crypto,
+            "total_bars": len(df),
+        }
+
+        # Crypto must be fresh within 45 minutes
+        if is_crypto and age_minutes > 45:
+            return False, f"Kriptovalyuta narxi eskirgan (oxirgi sham {int(age_minutes)} daqiqa oldin)", meta
+
+        # Forex/Gold on weekends: allowed for analysis, but marked
+        if not is_crypto and is_weekend:
+            meta["weekend_closed"] = True
+            return True, "Bozor dam olish kunida yopiq (Juma yopilish narxlari)", meta
+
+        # Forex/Gold on weekdays must be fresh within 45 minutes
+        if not is_crypto and not is_weekend and age_minutes > 45:
+            return False, f"Bozor narxi eskirgan (oxirgi yangilanish {int(age_minutes)} daqiqa oldin)", meta
+
+        return True, "Ma'lumotlar sifati a'lo va yangi", meta
+
+    # -------------------------------------------------------------------------
+    # 2. Multi-Timeframe (MTF) Analysis Engine (H4, H1, M15)
+    # -------------------------------------------------------------------------
+    def analyze_mtf(self, df_15m: pl.DataFrame) -> Dict[str, Any]:
+        """
+        Deep Multi-Timeframe Confluence & Conflict Analysis:
+        - H4: Macro Direction (4H resampled EMA 50 & 20)
+        - H1: Market Structure (1H resampled EMA 9 & 21)
+        - M15: Entry Trigger (15m live EMA 9 & 21 + RSI)
+        """
+        closes_15m = df_15m["close"].to_numpy()
+        cur_price = float(closes_15m[-1])
+
+        def calc_ema(arr, span):
+            if len(arr) == 0:
+                return np.array([])
+            alpha = 2 / (span + 1)
+            ema = [arr[0]]
+            for val in arr[1:]:
+                ema.append(alpha * val + (1 - alpha) * ema[-1])
+            return np.array(ema)
+
+        # 1. M15 Trigger Frame
+        ema9_15m = calc_ema(closes_15m, 9)
+        ema21_15m = calc_ema(closes_15m, 21)
+        if ema9_15m[-1] > ema21_15m[-1] and cur_price > ema9_15m[-1]:
+            m15_bias = "BULLISH"
+        elif ema9_15m[-1] < ema21_15m[-1] and cur_price < ema9_15m[-1]:
+            m15_bias = "BEARISH"
+        else:
+            m15_bias = "RANGING"
+
+        # 2. 1H Structure Frame
+        h1_bias = "NEUTRAL"
+        h1_close = cur_price
+        try:
+            df_1h = resample_ohlcv(df_15m, "1h")
+            if len(df_1h) >= 20:
+                closes_1h = df_1h["close"].to_numpy()
+                h1_close = float(closes_1h[-1])
+                ema9_1h = calc_ema(closes_1h, 9)
+                ema21_1h = calc_ema(closes_1h, 21)
+                if ema9_1h[-1] > ema21_1h[-1] and h1_close > ema9_1h[-1]:
+                    h1_bias = "BULLISH"
+                elif ema9_1h[-1] < ema21_1h[-1] and h1_close < ema9_1h[-1]:
+                    h1_bias = "BEARISH"
+                else:
+                    h1_bias = "RANGING"
+        except Exception as e:
+            logger.warning(f"1H MTF calculation error: {e}")
+
+        # 3. 4H Macro Trend Frame
+        h4_bias = "NEUTRAL"
+        h4_close = cur_price
+        try:
+            df_4h = resample_ohlcv(df_15m, "4h")
+            if len(df_4h) >= 15:
+                closes_4h = df_4h["close"].to_numpy()
+                h4_close = float(closes_4h[-1])
+                ema20_4h = calc_ema(closes_4h, 20)
+                ema50_4h = calc_ema(closes_4h, 50)
+                if ema20_4h[-1] > ema50_4h[-1] and h4_close > ema20_4h[-1]:
+                    h4_bias = "BULLISH"
+                elif ema20_4h[-1] < ema50_4h[-1] and h4_close < ema20_4h[-1]:
+                    h4_bias = "BEARISH"
+                else:
+                    h4_bias = "RANGING"
+            else:
+                # Fallback to 1H trend if not enough 4H bars
+                h4_bias = h1_bias
+        except Exception as e:
+            logger.warning(f"4H MTF calculation error: {e}")
+
+        # 4. Conflict & Alignment Detection
+        conflicts = []
+        if h4_bias != "NEUTRAL" and h1_bias != "NEUTRAL" and h4_bias != h1_bias:
+            conflicts.append(f"H4 ({h4_bias}) va H1 ({h1_bias}) o'zaro qarama-qarshi")
+
+        if h1_bias != "NEUTRAL" and m15_bias != "NEUTRAL" and h1_bias != m15_bias:
+            conflicts.append(f"H1 ({h1_bias}) va M15 ({m15_bias}) triggermos emas")
+
+        is_aligned = (h4_bias == h1_bias == m15_bias) and h4_bias in ["BULLISH", "BEARISH"]
+
+        return {
+            "h4_bias": h4_bias,
+            "h1_bias": h1_bias,
+            "m15_bias": m15_bias,
+            "is_aligned": is_aligned,
+            "conflicts": conflicts,
+            "current_price": cur_price,
+            "h1_close": h1_close,
+            "h4_close": h4_close,
+        }
+
+    def _calculate_recommended_lots(self, symbol: str, entry: float, stop_loss: float) -> Tuple[float, float, float]:
+        """Calculate position sizes for $1k, $5k, and $10k accounts with strict 1.0% risk rule."""
+        risk_dist = abs(entry - stop_loss)
+        if risk_dist <= 0:
+            return 0.01, 0.05, 0.10
+
+        sym = symbol.upper()
+        if "XAU" in sym or "GOLD" in sym:
+            point_risk = risk_dist * 100.0
+            lot_1k = max(0.01, round(10.0 / point_risk, 2))
+            lot_5k = max(0.01, round(50.0 / point_risk, 2))
+            lot_10k = max(0.01, round(100.0 / point_risk, 2))
+            return lot_1k, lot_5k, lot_10k
+
+        if "BTC" in sym:
+            lot_1k = max(0.001, round(10.0 / risk_dist, 3))
+            lot_5k = max(0.001, round(50.0 / risk_dist, 3))
+            lot_10k = max(0.001, round(100.0 / risk_dist, 3))
+            return lot_1k, lot_5k, lot_10k
+
+        if "ETH" in sym:
+            lot_1k = max(0.01, round(10.0 / risk_dist, 2))
+            lot_5k = max(0.01, round(50.0 / risk_dist, 2))
+            lot_10k = max(0.01, round(100.0 / risk_dist, 2))
+            return lot_1k, lot_5k, lot_10k
+
+        pip_risk = (risk_dist / 0.0001) * 10.0
+        if pip_risk > 0:
+            lot_1k = max(0.01, round(10.0 / pip_risk, 2))
+            lot_5k = max(0.01, round(50.0 / pip_risk, 2))
+            lot_10k = max(0.01, round(100.0 / pip_risk, 2))
+            return lot_1k, lot_5k, lot_10k
+
+        return 0.01, 0.05, 0.10
+
+    # -------------------------------------------------------------------------
+    # 3. Main Analysis & Signal Generation Loop
+    # -------------------------------------------------------------------------
     async def analyze_and_generate_signal(
         self,
         symbol: str,
@@ -199,70 +408,140 @@ class SignalEngine:
         timeframe: str = "15m",
     ) -> Tuple[Optional[GeneratedSignal], Dict[str, Any]]:
         """
-        Run the full AI Council analysis pipeline on OHLCV data.
+        Complete AI Council analysis pipeline on OHLCV data.
         Returns (GeneratedSignal if confluence passes else None, FullAnalysisMetadata).
         """
-        if df is None or len(df) < 60:
-            return None, {"error": "Insufficient candle data"}
+        # Diagnostic Audit Tracker for /why
+        audit: Dict[str, Any] = {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "gates_passed": [],
+            "gates_failed": [],
+            "summary_reason": "",
+        }
 
-        # CRITICAL: Strictly block signals on closed markets (e.g. Gold/Forex on weekends)
-        is_crypto = any(c in symbol.upper() for c in ["BTC", "ETH", "SOL", "USDT"])
-        if not is_crypto and self.session_filter.is_weekend():
-            logger.debug(f"{symbol} is closed for the weekend. Skipping signal generation.")
+        # ---------------------------------------------------------------------
+        # Gate 0: Data Quality & Freshness Sentinel
+        # ---------------------------------------------------------------------
+        is_fresh, fresh_msg, quality_meta = self.check_data_quality(symbol, df)
+        audit["quality_meta"] = quality_meta
+        if not is_fresh:
+            audit["gates_failed"].append(f"Ma'lumot sifati: {fresh_msg}")
+            audit["summary_reason"] = f"Ma'lumotlar sifati talabga javob bermaydi ({fresh_msg})"
+            self.latest_diagnostics[symbol] = audit
+            return None, {
+                "symbol": symbol,
+                "current_price": float(df["close"][-1]) if df is not None and len(df) > 0 else 0.0,
+                "market_status": "BLOCKED_BY_DATA_QUALITY",
+                "gate_reason": fresh_msg,
+                "audit": audit,
+            }
+        audit["gates_passed"].append("Ma'lumot sifati: Yangi va toza OHLCV shamlar")
+
+        # ---------------------------------------------------------------------
+        # Gate 1: Session & Schedule Filter
+        # ---------------------------------------------------------------------
+        is_allowed, session_reason = self.session_filter.is_signal_allowed(symbol)
+        if not is_allowed:
+            audit["gates_failed"].append(f"Bozor jadvali: {session_reason}")
+            audit["summary_reason"] = session_reason
+            self.latest_diagnostics[symbol] = audit
             return None, {
                 "symbol": symbol,
                 "current_price": float(df["close"][-1]),
-                "market_status": "CLOSED (Weekend)",
-                "note": "Bozor dam olish kuni tufayli yopiq. Signal berilmaydi.",
+                "market_status": "BLOCKED_BY_SCHEDULE",
+                "gate_reason": session_reason,
+                "audit": audit,
             }
+        audit["gates_passed"].append(f"Sessiya: Faol savdo vaqti ({session_reason})")
 
-        # Step 1: Feature Engineering
+        # ---------------------------------------------------------------------
+        # Gate 2: High-Impact Economic News Sentinel
+        # ---------------------------------------------------------------------
+        news_status = await self.news_sentinel.check_news_safety(currency="USD")
+        audit["news_status"] = news_status.status
+        audit["news_warning"] = news_status.warning_text
+
+        if not news_status.is_safe and news_status.status == "DANGER":
+            audit["gates_failed"].append(f"Yangiliklar xavfi: {news_status.warning_text}")
+            audit["summary_reason"] = "Yaqin orada yuqori ta'sirli yangilik (CPI/NFP/FOMC) kutilmoqda"
+            self.latest_diagnostics[symbol] = audit
+            return None, {
+                "symbol": symbol,
+                "current_price": float(df["close"][-1]),
+                "market_status": "BLOCKED_BY_NEWS",
+                "gate_reason": news_status.warning_text,
+                "audit": audit,
+            }
+        audit["gates_passed"].append("Yangiliklar: Bozor iqtisodiy jihatdan xavfsiz")
+
+        # ---------------------------------------------------------------------
+        # Gate 3: Multi-Timeframe (MTF) Engine (H4, H1, M15)
+        # ---------------------------------------------------------------------
+        mtf_data = self.analyze_mtf(df)
+        audit["mtf"] = mtf_data
+        h4_trend = mtf_data["h4_bias"]
+        h1_trend = mtf_data["h1_bias"]
+        m15_bias = mtf_data["m15_bias"]
+
+        # ---------------------------------------------------------------------
+        # Step 4: Technical Feature Engineering & SMC Calculation
+        # ---------------------------------------------------------------------
         df_feat = self.feature_eng.calculate_all(df, include_ml_features=True)
-
-        # Step 2: SMC Analysis
         df_smc = self.smc.calculate_all(df_feat)
 
-        # Step 3: Market Regime Detection (HMM)
+        # ---------------------------------------------------------------------
+        # Step 5: Market Regime Detection (HMM)
+        # ---------------------------------------------------------------------
         df_smc = self.regime_detector.predict(df_smc)
         regime_state = self.regime_detector.get_current_state(df_smc)
         regime_name = regime_state.regime.value if regime_state else "medium_volatility"
+        audit["regime"] = regime_name
 
-        # Step 4: Machine Learning Prediction (XGBoost)
+        # ---------------------------------------------------------------------
+        # Step 6: Native SMC Signal Generation
+        # ---------------------------------------------------------------------
+        smc_signal: Optional[SMCSignal] = self.smc.generate_signal(df_smc)
+        has_smc_setup = smc_signal is not None
+        smc_dir = smc_signal.signal_type if smc_signal else "NONE"
+        audit["smc_setup"] = smc_dir if has_smc_setup else "Topilmadi (OB/FVG yo'q)"
+
+        # ---------------------------------------------------------------------
+        # Step 7: Machine Learning (XGBoost) Prediction
+        # ---------------------------------------------------------------------
         ml_prediction = self.ml_model.predict(df_smc)
         ml_signal = ml_prediction.signal           # "BUY", "SELL", or "HOLD"
         ml_confidence = ml_prediction.confidence   # 0.0 - 1.0
+        audit["ml_signal"] = ml_signal
+        audit["ml_confidence"] = round(ml_confidence * 100, 1)
 
-        # Step 5: Session Filter
+        # ---------------------------------------------------------------------
+        # Step 8: Macro DXY Alignment
+        # ---------------------------------------------------------------------
         session_enum, session_config = self.session_filter.get_current_session()
-        current_session = session_enum.value
+        current_session = session_config.name
 
-        # Step 6: Macro Analysis (DXY)
-        macro_report = self.macro_agent.evaluate_macro(dxy_df, target_symbol=symbol, technical_direction=ml_signal)
+        macro_report = self.macro_agent.evaluate_macro(
+            dxy_df,
+            target_symbol=symbol,
+            technical_direction=smc_dir if has_smc_setup else ml_signal,
+        )
+        audit["macro_dxy"] = macro_report.reason
 
-        # Step 7: News Safety Check
-        news_status = await self.news_sentinel.check_news_safety(currency="USD")
+        current_price = float(df_smc["close"][-1])
+        atr = float(df_smc["atr"][-1]) if "atr" in df_smc.columns else (current_price * 0.005)
+        if atr <= 0 or np.isnan(atr):
+            atr = current_price * 0.005
 
-        # Extract SMC indicators
-        rsi_val = float(df_smc["rsi"][-1]) if "rsi" in df_smc.columns else 50.0
-        bull_ob_str = "Aniqlanmadi"
-        bear_ob_str = "Aniqlanmadi"
-        if "ob" in df_smc.columns and "ob_top" in df_smc.columns and "ob_bottom" in df_smc.columns:
-            bull_obs = df_smc.filter(pl.col("ob") == 1)
-            bear_obs = df_smc.filter(pl.col("ob") == -1)
-            if len(bull_obs) > 0:
-                b_bot = float(bull_obs["ob_bottom"][-1])
-                b_top = float(bull_obs["ob_top"][-1])
-                bull_ob_str = f"{b_bot:.2f} - {b_top:.2f}"
-            if len(bear_obs) > 0:
-                s_bot = float(bear_obs["ob_bottom"][-1])
-                s_top = float(bear_obs["ob_top"][-1])
-                bear_ob_str = f"{s_bot:.2f} - {s_top:.2f}"
-
-        # Combine analysis metadata
         meta = {
             "symbol": symbol,
             "timeframe": timeframe,
-            "current_price": float(df_smc["close"][-1]),
+            "current_price": current_price,
+            "h4_trend": h4_trend,
+            "htf_trend": h1_trend,
+            "m15_bias": m15_bias,
+            "smc_signal": smc_dir,
             "ml_signal": ml_signal,
             "ml_confidence": ml_confidence,
             "regime": regime_name,
@@ -270,115 +549,182 @@ class SignalEngine:
             "macro": macro_report.reason,
             "news": news_status.warning_text,
             "news_is_safe": news_status.is_safe,
-            "rsi": rsi_val,
-            "bullish_ob": bull_ob_str,
-            "bearish_ob": bear_ob_str,
+            "quality_meta": quality_meta,
+            "audit": audit,
         }
 
         # ---------------------------------------------------------------------
-        # CONFLUENCE GATING (Must pass all strict filters)
+        # Gate 4: Direction Consensus & Conflict Gatekeeper
         # ---------------------------------------------------------------------
-        # 1. Block if News is in High Danger
-        if not news_status.is_safe and news_status.status == "DANGER":
-            meta["gate_reason"] = "Iqtisodiy yangilik xavfi (News Danger)"
-            logger.info(f"Signal rejected by News Sentinel: {news_status.warning_text}")
+        target_direction: Optional[str] = None
+        confluence_reasons: List[str] = []
+        is_sniper_a_plus = False
+
+        # Case A: Pure Sniper Confluence (SMC + ML + H1 Agree)
+        if has_smc_setup and smc_dir in ["BUY", "SELL"] and ml_signal == smc_dir:
+            target_direction = smc_dir
+            is_sniper_a_plus = True
+            confluence_reasons.append(f"AI XGBoost modeli tasdig'i: {ml_signal} ({ml_confidence*100:.1f}%)")
+            confluence_reasons.append(f"SMC {smc_dir} strukturasi ({smc_signal.reason})")
+
+        # Case B: Strong SMC setup aligned with 1H Trend
+        elif has_smc_setup and smc_dir in ["BUY", "SELL"]:
+            if (smc_dir == "BUY" and h1_trend == "BULLISH") or (smc_dir == "SELL" and h1_trend == "BEARISH"):
+                target_direction = smc_dir
+                confluence_reasons.append(f"SMC {smc_dir} strukturasi ({smc_signal.reason})")
+                confluence_reasons.append(f"1H Trend mosligi ({h1_trend})")
+                if ml_signal != "HOLD" and ml_signal != smc_dir:
+                    audit["gates_failed"].append(f"AI Model ziddiyati: ML ({ml_signal}) SMC ({smc_dir}) ga qarshi")
+                    audit["summary_reason"] = f"AI XGBoost modeli ({ml_signal}) SMC signaliga ({smc_dir}) to'g'ridan-to'g'ri qarshi chiqdi"
+                    self.latest_diagnostics[symbol] = audit
+                    meta["gate_reason"] = audit["summary_reason"]
+                    return None, meta
+
+        # Case C: High Confidence ML Signal with MTF Alignment
+        elif ml_signal in ["BUY", "SELL"] and ml_confidence >= 0.62:
+            if (ml_signal == "BUY" and h1_trend in ["BULLISH", "NEUTRAL"]) or \
+               (ml_signal == "SELL" and h1_trend in ["BEARISH", "NEUTRAL"]):
+                target_direction = ml_signal
+                confluence_reasons.append(f"AI XGBoost yuqori ishonchi ({ml_confidence*100:.1f}%)")
+                confluence_reasons.append(f"1H Trend yo'nalishi ({h1_trend})")
+
+        # If no consensus was reached
+        if not target_direction:
+            reason = "Bozorda aniq yo'nalish konsensusi (SMC / ML / 1H Trend) shakllanmadi"
+            audit["gates_failed"].append(reason)
+            audit["summary_reason"] = reason
+            self.latest_diagnostics[symbol] = audit
+            meta["gate_reason"] = reason
             return None, meta
 
-        # 2. Block if ML signal is HOLD
-        if ml_signal == "HOLD":
-            meta["gate_reason"] = "ML modeli aniq yo'nalish bermadi (HOLD)"
+        # MTF Conflict check: Don't trade directly against H4 macro trend
+        if target_direction == "BUY" and h4_trend == "BEARISH":
+            conflict_msg = f"H4 Katta Trend (BEARISH) M15 BUY signaliga qarshi! Katta trendga qarshi savdo taqiqlandi"
+            audit["gates_failed"].append(f"MTF Ziddiyat: {conflict_msg}")
+            audit["summary_reason"] = conflict_msg
+            self.latest_diagnostics[symbol] = audit
+            meta["gate_reason"] = conflict_msg
             return None, meta
 
-        # 3. Dynamic Confidence Adjustment
-        adjusted_confidence = ml_confidence + macro_report.confluence_boost
-        market_eval = self.dynamic_confidence.analyze_market(
-            session=current_session,
-            regime=regime_name,
-            volatility="medium",
-            trend_direction=ml_signal,
-            has_smc_signal=True,
-            ml_signal=ml_signal,
-            ml_confidence=ml_confidence,
-        )
+        if target_direction == "SELL" and h4_trend == "BULLISH":
+            conflict_msg = f"H4 Katta Trend (BULLISH) M15 SELL signaliga qarshi! Katta trendga qarshi savdo taqiqlandi"
+            audit["gates_failed"].append(f"MTF Ziddiyat: {conflict_msg}")
+            audit["summary_reason"] = conflict_msg
+            self.latest_diagnostics[symbol] = audit
+            meta["gate_reason"] = conflict_msg
+            return None, meta
+
+        audit["gates_passed"].append(f"MTF Konsensus: {target_direction} yo'nalishi H4 ({h4_trend}) va H1 ({h1_trend}) ga mos")
+
+        # ---------------------------------------------------------------------
+        # Gate 5: Dynamic Confidence & Mode Filter
+        # ---------------------------------------------------------------------
         cfg = SIGNAL_MODES.get(self.active_mode, SIGNAL_MODES["standard"])
         mode_threshold = cfg["threshold"]
 
-        if self.active_mode == "aggressive":
-            required_threshold = min(market_eval.confidence_threshold, mode_threshold)
-        elif self.active_mode == "conservative":
-            required_threshold = max(market_eval.confidence_threshold, mode_threshold)
-        else:
-            required_threshold = market_eval.confidence_threshold
+        adjusted_confidence = ml_confidence + (macro_report.confluence_boost if macro_report.confluence_boost > 0 else 0)
+        if has_smc_setup:
+            adjusted_confidence = max(adjusted_confidence, smc_signal.confidence)
 
-        meta["mode"] = cfg["name"]
-        meta["required_threshold"] = required_threshold
         meta["adjusted_confidence"] = adjusted_confidence
+        meta["required_threshold"] = mode_threshold
 
-        if adjusted_confidence < required_threshold:
-            meta["gate_reason"] = f"Ishonch darajasi ({adjusted_confidence*100:.1f}%) kerakli filtrdan ({required_threshold*100:.1f}%) past"
-            logger.debug(f"{symbol} confidence {adjusted_confidence:.2f} < threshold {required_threshold:.2f} (Mode: {self.active_mode})")
+        if adjusted_confidence < mode_threshold and not is_sniper_a_plus:
+            reason = f"AI ishonch darajasi ({adjusted_confidence*100:.1f}%) rejim talabidan ({mode_threshold*100:.1f}%) past"
+            audit["gates_failed"].append(reason)
+            audit["summary_reason"] = reason
+            self.latest_diagnostics[symbol] = audit
+            meta["gate_reason"] = reason
             return None, meta
 
-        meta["gate_reason"] = "A+ Confluence tasdiqlandi"
+        audit["gates_passed"].append(f"AI Ishonchi: {adjusted_confidence*100:.1f}% (Kerakli: {mode_threshold*100:.1f}%)")
 
-        # 4. Price and Target Calculations
-        current_price = float(df_smc["close"][-1])
-        atr = float(df_smc["atr"][-1]) if "atr" in df_smc.columns else (current_price * 0.005)
-        if atr <= 0 or np.isnan(atr):
-            atr = current_price * 0.005
+        # Grade Determination
+        if is_sniper_a_plus and h4_trend == h1_trend and macro_report.confluence_boost > 0:
+            final_grade = "🏆 A+ (SNIPER CONFLUENCE)"
+        elif is_sniper_a_plus or (h4_trend == h1_trend):
+            final_grade = "⚡ A (TREND MOMENTUM)"
+        else:
+            final_grade = "🎯 B (MOMENTUM SCALP)"
 
-        reasons = []
-        reasons.append(f"AI XGBoost tasdig'i: {ml_signal} ({ml_confidence*100:.1f}%)")
-        reasons.append(f"Bozor rejimi: {regime_name.capitalize()}")
-        reasons.append(f"Savdo sessiyasi: {current_session.capitalize()}")
-        if macro_report.confluence_boost > 0:
-            reasons.append(macro_report.reason)
+        # ---------------------------------------------------------------------
+        # Gate 6: Risk-to-Reward and Invalidation Calculation
+        # ---------------------------------------------------------------------
+        entry = current_price
+        order_type = f"MARKET {target_direction}"
 
-        if ml_signal == "BUY":
-            entry = current_price
-            # SL placed below recent low or 1.5x ATR
-            sl_distance = max(atr * 1.5, current_price * 0.003)
-            stop_loss = entry - sl_distance
-            tp1 = entry + (sl_distance * 1.5)
-            tp2 = entry + (sl_distance * 2.5)
-            tp3 = entry + (sl_distance * 4.0)
-            rr = (tp2 - entry) / sl_distance
-            reasons.append("SMC Bullish struktura va likvidlik tasdig'i")
+        last_swing_high = float(df_smc["last_swing_high"][-1]) if "last_swing_high" in df_smc.columns and df_smc["last_swing_high"][-1] is not None else None
+        last_swing_low = float(df_smc["last_swing_low"][-1]) if "last_swing_low" in df_smc.columns and df_smc["last_swing_low"][-1] is not None else None
+        min_buffer = atr * 0.3
+
+        if target_direction == "BUY":
+            if last_swing_low and last_swing_low < entry and (entry - last_swing_low) < (atr * 3.0):
+                stop_loss = last_swing_low - min_buffer
+                confluence_reasons.append("SL: Swing Low likvidlik chegarasi ostida")
+            else:
+                stop_loss = entry - (atr * 1.5)
+                confluence_reasons.append("SL: Volatillik (1.5x ATR) buferi asosida")
+
+            sl_dist = entry - stop_loss
+            tp1 = entry + (sl_dist * 1.5)
+            tp2 = entry + (sl_dist * 2.5)
+            tp3 = entry + (sl_dist * 4.0)
+            rr = (tp2 - entry) / sl_dist if sl_dist > 0 else 0
 
         else:  # SELL
-            entry = current_price
-            # SL placed above recent high or 1.5x ATR
-            sl_distance = max(atr * 1.5, current_price * 0.003)
-            stop_loss = entry + sl_distance
-            tp1 = entry - (sl_distance * 1.5)
-            tp2 = entry - (sl_distance * 2.5)
-            tp3 = entry - (sl_distance * 4.0)
-            rr = (entry - tp2) / sl_distance
-            reasons.append("SMC Bearish struktura va likvidlik tasdig'i")
+            if last_swing_high and last_swing_high > entry and (last_swing_high - entry) < (atr * 3.0):
+                stop_loss = last_swing_high + min_buffer
+                confluence_reasons.append("SL: Swing High likvidlik chegarasi tepasida")
+            else:
+                stop_loss = entry + (atr * 1.5)
+                confluence_reasons.append("SL: Volatillik (1.5x ATR) buferi asosida")
 
-        # 5. Check Minimum Risk:Reward
+            sl_dist = stop_loss - entry
+            tp1 = entry - (sl_dist * 1.5)
+            tp2 = entry - (sl_dist * 2.5)
+            tp3 = entry - (sl_dist * 4.0)
+            rr = (entry - tp2) / sl_dist if sl_dist > 0 else 0
+
         if rr < self.min_rr:
+            reason = f"Risk:Reward nisbati (1:{rr:.1f}) minimal me'yordan (1:{self.min_rr:.1f}) kam"
+            audit["gates_failed"].append(reason)
+            audit["summary_reason"] = reason
+            self.latest_diagnostics[symbol] = audit
+            meta["gate_reason"] = reason
             return None, meta
 
-        # 6. Generate Chart Snapshot
+        audit["gates_passed"].append(f"R:R Nisbati: 1:{rr:.1f} (A'lo)")
+
+        # Confluence context
+        confluence_reasons.append(f"4H Trend: {h4_trend} | 1H Struktura: {h1_trend}")
+        confluence_reasons.append(f"Bozor rejimi: {regime_name.capitalize()}")
+        confluence_reasons.append(f"Sessiya: {current_session}")
+        if macro_report.confluence_boost > 0:
+            confluence_reasons.append(macro_report.reason)
+
+        lot_1k, lot_5k, lot_10k = self._calculate_recommended_lots(symbol, entry, stop_loss)
+
+        # Generate chart
         chart_path = self.chart_generator.generate_signal_chart(
             df=df_smc,
             symbol=symbol,
             timeframe=timeframe,
-            direction=ml_signal,
+            direction=target_direction,
             entry_price=entry,
             stop_loss=stop_loss,
             take_profit_1=tp1,
             take_profit_2=tp2,
             ai_confidence=adjusted_confidence,
-            smc_reasons=reasons,
+            smc_reasons=confluence_reasons,
         )
 
         signal = GeneratedSignal(
             id=str(uuid.uuid4())[:8],
             symbol=symbol,
             timeframe=timeframe,
-            direction=ml_signal,
+            direction=target_direction,
+            grade=final_grade,
+            order_type=order_type,
             entry_price=entry,
             stop_loss=stop_loss,
             take_profit_1=tp1,
@@ -390,8 +736,94 @@ class SignalEngine:
             session=current_session,
             macro_alignment=macro_report.dxy_trend,
             news_status=news_status.status,
-            confluence_reasons=reasons,
+            confluence_reasons=confluence_reasons,
+            lot_1k=lot_1k,
+            lot_5k=lot_5k,
+            lot_10k=lot_10k,
             chart_image_path=chart_path,
         )
 
+        audit["summary_reason"] = f"Barcha 8 ta sifat filtrlari muvaffaqiyatli o'tdi ({final_grade})"
+        self.latest_diagnostics[symbol] = audit
+        meta["gate_reason"] = audit["summary_reason"]
         return signal, meta
+
+    # -------------------------------------------------------------------------
+    # 4. Diagnostic Audit Inspector for /why command
+    # -------------------------------------------------------------------------
+    async def get_diagnostic_audit(
+        self,
+        symbol: str,
+        data_fetcher,
+    ) -> str:
+        """
+        Generate detailed, transparent breakdown of why a signal was or was not generated.
+        Fully answers the user requirement for '/why <symbol>'.
+        """
+        sym = symbol.upper().replace("/", "").replace("-", "")
+        # Fetch fresh data
+        fetch_sym = sym
+        if "BTC" in sym:
+            fetch_sym = "BTC-USD"
+        elif "ETH" in sym:
+            fetch_sym = "ETH-USD"
+        elif "XAU" in sym or "GOLD" in sym:
+            fetch_sym = "GC=F"
+
+        df = await data_fetcher.get_market_data(fetch_sym, "15m")
+        dxy_df = await data_fetcher.get_market_data("DXY", "15m")
+
+        if df is None or len(df) < 50:
+            return (
+                f"❌ <b>#{sym} BO'YICHA MA'LUMOT YUKLANMADI:</b>\n"
+                f"Serverdan jonli shamlar olinmadi yoki bozor yopiq."
+            )
+
+        # Run analysis to populate diagnostics
+        sig, meta = await self.analyze_and_generate_signal(sym, df, dxy_df)
+        audit = self.latest_diagnostics.get(sym, meta.get("audit", {}))
+
+        q_meta = audit.get("quality_meta", {})
+        mtf = audit.get("mtf", {})
+        cur_p = meta.get("current_price", 0.0)
+        regime = meta.get("regime", "Barqaror")
+        ml_sig = meta.get("ml_signal", "HOLD")
+        ml_conf = meta.get("ml_confidence", 0.0) * 100
+        smc_status = audit.get("smc_setup", "Kutilmoqda")
+        news_w = audit.get("news_warning", "Bozor tinch")
+        conflicts = mtf.get("conflicts", [])
+        summary = audit.get("summary_reason", meta.get("gate_reason", "Kutilmoqda"))
+        last_cand_time = q_meta.get("last_candle_time", "Noma'lum")
+        sess_name = meta.get("session", "Noma'lum")
+
+        conflict_str = f"⚠️ {', '.join(conflicts)}" if conflicts else "✅ Ziddiyat yo'q (Mos kelmoqda)"
+
+        report = (
+            f"🔍 <b>#{sym} — SIGNAL AUDITI (NEGA SIGNAL YO'Q?):</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💵 <b>Joriy Narx:</b> <code>${cur_p:,.2f}</code>\n"
+            f"⏱️ <b>Ma'lumot Sifati:</b> {q_meta.get('source', 'Yahoo Direct')}\n"
+            f"  • Yangilanish: <code>{last_cand_time}</code> ({q_meta.get('age_minutes', 0)} daq oldin)\n\n"
+            f"📊 <b>Multi-Timeframe Tahlili (MTF):</b>\n"
+            f"  • <b>H4 Katta Trend:</b> <code>{mtf.get('h4_bias', 'NEUTRAL')}</code>\n"
+            f"  • <b>H1 Struktura:</b> <code>{mtf.get('h1_bias', 'NEUTRAL')}</code>\n"
+            f"  • <b>M15 Trigger:</b> <code>{mtf.get('m15_bias', 'NEUTRAL')}</code>\n"
+            f"  • <b>Ziddiyatlar:</b> {conflict_str}\n\n"
+            f"🧠 <b>AI & SMC Holati:</b>\n"
+            f"  • <b>SMC Strukturasi:</b> {smc_status}\n"
+            f"  • <b>XGBoost AI:</b> <b>{ml_sig}</b> ({ml_conf:.1f}%)\n"
+            f"  • <b>Bozor Rejimi:</b> <i>{regime}</i>\n"
+            f"  • <b>Sessiya:</b> {sess_name}\n\n"
+            f"📰 <b>Yangiliklar Qalqoni:</b>\n"
+            f"  • {news_w}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🛑 <b>ASOSIY SABAB (GATE VERDICT):</b>\n"
+            f"👉 <b><i>{summary}</i></b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        )
+        if sig:
+            report += f"🎉 <b>Ayni paytda ushbu aktivda {sig.grade} signali mavjud!</b>"
+        else:
+            report += f"💡 <i>Bot pulingizni asrash maqsadida faqat barcha filtrlardan o'tgan A+ signallarni beradi.</i>"
+
+        return report

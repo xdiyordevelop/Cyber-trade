@@ -56,8 +56,12 @@ class CyberTradeOrchestrator:
         self.data_fetcher = UniversalDataFetcher()
         self.signal_tracker = SignalTracker()
         self.ai_assistant = MarketAIAssistant(
-            api_key=self.config.llm.groq_api_key or self.config.llm.gemini_api_key,
-            model_name=self.config.llm.model_name,
+            gemini_api_key=self.config.llm.gemini_api_key,
+            groq_api_key=self.config.llm.groq_api_key,
+            primary_model=self.config.llm.gemini_primary_model,
+            lite_model=self.config.llm.gemini_lite_model,
+            complex_model=self.config.llm.gemini_complex_model,
+            groq_model=self.config.llm.groq_model_name,
         )
         self.signal_engine = SignalEngine(
             xgboost_path=str(self.config.ai.xgboost_path),
@@ -82,6 +86,7 @@ class CyberTradeOrchestrator:
             data_fetcher=self.data_fetcher,
             signal_tracker=self.signal_tracker,
         )
+        self.last_analyzed_candle: dict = {}
         self._running = False
 
     async def run_market_loop(self):
@@ -111,6 +116,7 @@ class CyberTradeOrchestrator:
                         continue
 
                     current_price = float(df["close"][-1])
+                    latest_candle_time = str(df["time"][-1])
 
                     # 3. Check active signals trailing triggers (TP1 / TP2 / SL)
                     trailing_alerts = self.signal_tracker.update_price(symbol, current_price)
@@ -123,7 +129,14 @@ class CyberTradeOrchestrator:
                         logger.debug(f"{symbol} bo'yicha ochiq signal mavjud. Takroriy signal generatsiya qilinmaydi.")
                         continue
 
-                    # 5. Run AI Council Signal Analysis
+                    # 5. Anti-Spam Gate: Don't evaluate the same 15m candle multiple times
+                    if self.last_analyzed_candle.get(symbol) == latest_candle_time:
+                        continue
+
+                    # Mark this candle as evaluated
+                    self.last_analyzed_candle[symbol] = latest_candle_time
+
+                    # 6. Run AI Council Signal Analysis
                     signal, meta = await self.signal_engine.analyze_and_generate_signal(
                         symbol=symbol,
                         df=df,
