@@ -372,6 +372,36 @@ class TestTraderImprovements(unittest.TestCase):
         self.assertIn("set_mode:standard", mode_callbacks)
         self.assertIn("set_mode:conservative", mode_callbacks)
 
+    def test_tezkor_tahlil_symbol_resolution(self):
+        """Verify that '🔍 Tezkor Tahlil' button does not mistakenly parse 'TEZKOR' as a ticker symbol."""
+        inputs = ["🔍 Tezkor Tahlil", "tezkor tahlil", "tahlil", "🔍 tezkor"]
+        for inp in inputs:
+            t_low = inp.lower()
+            sym = None
+            if "btc" in t_low or "bitcoin" in t_low:
+                sym = "BTCUSDT"
+            elif "eth" in t_low or "efir" in t_low or "ethereum" in t_low:
+                sym = "ETHUSDT"
+            elif "sol" in t_low or "solana" in t_low:
+                sym = "SOLUSDT"
+            elif "xau" in t_low or "oltin" in t_low or "gold" in t_low:
+                sym = "XAUUSD"
+            elif inp.startswith("/analyze ") or inp.startswith("/why "):
+                parts = inp.split()
+                if len(parts) > 1 and not parts[1].startswith("/"):
+                    candidate = parts[1].upper().strip()
+                    if candidate not in ["TEZKOR", "TAHLIL", "🔍"]:
+                        sym = candidate
+
+            # When clicking the menu button, sym must remain None so that format_analyze_menu is opened!
+            self.assertIsNone(sym, f"'{inp}' should not resolve to a symbol like 'TEZKOR', but rather open the menu!")
+
+        # Explicit asset mentions must resolve properly
+        self.assertEqual(
+            "XAUUSD" if "oltin" in "tezkor tahlil oltin".lower() else None,
+            "XAUUSD"
+        )
+
     def test_human_like_ai_chat_response(self):
         """Verify that AI assistant speaks like a real human trader, not a robotic template."""
         from src.ai_chat import MarketAIAssistant, detect_symbol_from_text

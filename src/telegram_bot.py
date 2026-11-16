@@ -887,21 +887,25 @@ class CyberTelegramBot:
             or text.startswith("/why")
             or "tezkor tahlil" in t_low
             or t_low == "🔍 tezkor tahlil"
-            or "nega" in t_low
             or t_low.strip() == "tahlil"
+            or t_low.strip() == "tezkor"
+            or "nega" in t_low
         ):
-            parts = text.split()
             sym = None
             if "btc" in t_low or "bitcoin" in t_low:
                 sym = "BTCUSDT"
-            elif "eth" in t_low or "efir" in t_low:
+            elif "eth" in t_low or "efir" in t_low or "ethereum" in t_low:
                 sym = "ETHUSDT"
-            elif "sol" in t_low:
+            elif "sol" in t_low or "solana" in t_low:
                 sym = "SOLUSDT"
             elif "xau" in t_low or "oltin" in t_low or "gold" in t_low:
                 sym = "XAUUSD"
-            elif len(parts) > 1 and not parts[1].startswith("/"):
-                sym = parts[1].upper()
+            elif text.startswith("/analyze ") or text.startswith("/why "):
+                parts = text.split()
+                if len(parts) > 1 and not parts[1].startswith("/"):
+                    candidate = parts[1].upper().strip()
+                    if candidate not in ["TEZKOR", "TAHLIL", "🔍"]:
+                        sym = candidate
 
             is_why = text.startswith("/why") or "nega" in t_low
 
