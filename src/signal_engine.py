@@ -565,9 +565,10 @@ class SignalEngine:
                 target_direction = smc_dir
                 confluence_reasons.append(f"SMC {smc_dir} strukturasi ({smc_signal.reason})")
                 confluence_reasons.append(f"1H Trend mosligi ({h1_trend})")
-                if ml_signal != "HOLD" and ml_signal != smc_dir:
-                    audit["gates_failed"].append(f"AI Model ziddiyati: ML ({ml_signal}) SMC ({smc_dir}) ga qarshi")
-                    audit["summary_reason"] = f"AI XGBoost modeli ({ml_signal}) SMC signaliga ({smc_dir}) to'g'ridan-to'g'ri qarshi chiqdi"
+                # Only strong ML confidence (>= 62%) has veto power over SMC structure
+                if ml_signal != "HOLD" and ml_signal != smc_dir and ml_confidence >= 0.62:
+                    audit["gates_failed"].append(f"AI Model ziddiyati: ML ({ml_signal} {ml_confidence*100:.0f}%) SMC ({smc_dir}) ga qarshi")
+                    audit["summary_reason"] = f"AI XGBoost modeli ({ml_signal} {ml_confidence*100:.0f}%) SMC signaliga ({smc_dir}) to'g'ridan-to'g'ri qarshi chiqdi"
                     self.latest_diagnostics[symbol] = audit
                     meta["gate_reason"] = audit["summary_reason"]
                     return None, meta
@@ -589,22 +590,27 @@ class SignalEngine:
             meta["gate_reason"] = reason
             return None, meta
 
-        # MTF Conflict check: Don't trade directly against H4 macro trend
-        if target_direction == "BUY" and h4_trend == "BEARISH":
-            conflict_msg = f"H4 Katta Trend (BEARISH) M15 BUY signaliga qarshi! Katta trendga qarshi savdo taqiqlandi"
-            audit["gates_failed"].append(f"MTF Ziddiyat: {conflict_msg}")
-            audit["summary_reason"] = conflict_msg
-            self.latest_diagnostics[symbol] = audit
-            meta["gate_reason"] = conflict_msg
-            return None, meta
+        # MTF Conflict check: Don't trade directly against H4 macro trend (unless in aggressive scalp mode)
+        is_aggressive = (self.active_mode == "aggressive")
+        if not is_aggressive:
+            if target_direction == "BUY" and h4_trend == "BEARISH":
+                conflict_msg = f"H4 Katta Trend (BEARISH) M15 BUY signaliga qarshi! Katta trendga qarshi savdo taqiqlandi"
+                audit["gates_failed"].append(f"MTF Ziddiyat: {conflict_msg}")
+                audit["summary_reason"] = conflict_msg
+                self.latest_diagnostics[symbol] = audit
+                meta["gate_reason"] = conflict_msg
+                return None, meta
 
-        if target_direction == "SELL" and h4_trend == "BULLISH":
-            conflict_msg = f"H4 Katta Trend (BULLISH) M15 SELL signaliga qarshi! Katta trendga qarshi savdo taqiqlandi"
-            audit["gates_failed"].append(f"MTF Ziddiyat: {conflict_msg}")
-            audit["summary_reason"] = conflict_msg
-            self.latest_diagnostics[symbol] = audit
-            meta["gate_reason"] = conflict_msg
-            return None, meta
+            if target_direction == "SELL" and h4_trend == "BULLISH":
+                conflict_msg = f"H4 Katta Trend (BULLISH) M15 SELL signaliga qarshi! Katta trendga qarshi savdo taqiqlandi"
+                audit["gates_failed"].append(f"MTF Ziddiyat: {conflict_msg}")
+                audit["summary_reason"] = conflict_msg
+                self.latest_diagnostics[symbol] = audit
+                meta["gate_reason"] = conflict_msg
+                return None, meta
+        else:
+            if (target_direction == "BUY" and h4_trend == "BEARISH") or (target_direction == "SELL" and h4_trend == "BULLISH"):
+                confluence_reasons.append(f"⚡ Agressiv Scalp: H4 ({h4_trend}) ga qarshi tezkor M15 bitim")
 
         audit["gates_passed"].append(f"MTF Konsensus: {target_direction} yo'nalishi H4 ({h4_trend}) va H1 ({h1_trend}) ga mos")
 

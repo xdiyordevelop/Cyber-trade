@@ -290,12 +290,23 @@ class UniversalDataFetcher:
         # ---------------------------------------------------------------------
         # 2. Resilient Offline/Container Fallbacks (Only when MT5 is not attached)
         # ---------------------------------------------------------------------
-        # Gold Fallback
+        # Gold Fallback (Real Gold Spot / COMEX Futures GC=F - exact match with MT5)
         if "XAU" in sym or "GOLD" in sym:
+            # 1. Primary: Real COMEX Gold Futures (GC=F) - exact spot gold price matching broker MT5
+            df_gold = await self.fetch_yahoo_direct("GC=F", interval=timeframe, range_period="30d")
+            if df_gold is not None and len(df_gold) >= 30:
+                return df_gold
+
+            # 2. Secondary: Spot Gold XAUUSD=X
+            df_xau = await self.fetch_yahoo_direct("XAUUSD=X", interval=timeframe, range_period="30d")
+            if df_xau is not None and len(df_xau) >= 30:
+                return df_xau
+
+            # 3. Tertiary: Binance Vision PAXG/USDT
             df_paxg = await self.fetch_binance_direct("PAXGUSDT", interval=timeframe, limit=bars)
             if df_paxg is not None and len(df_paxg) >= 30:
                 return df_paxg
-            return await self.fetch_yahoo_direct("GC=F", interval=timeframe, range_period="30d")
+            return None
 
         # Dollar Index (DXY)
         if "DXY" in sym or "USDX" in sym:
