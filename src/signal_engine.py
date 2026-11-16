@@ -26,7 +26,10 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Tuple
 import polars as pl
 import numpy as np
-from loguru import logger
+try:
+    from loguru import logger
+except ImportError:
+    from src.logger import logger
 
 from src.smc import SMCAnalyzer, SMCSignal
 from src.feature_eng import FeatureEngineer
@@ -64,10 +67,13 @@ class GeneratedSignal:
     lot_1k: float = 0.01
     lot_5k: float = 0.05
     lot_10k: float = 0.10
+    ob_top: Optional[float] = None
+    ob_bottom: Optional[float] = None
     chart_image_path: Optional[str] = None
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def to_active_signal(self) -> ActiveSignal:
+        is_filled = "LIMIT" not in self.order_type.upper()
         return ActiveSignal(
             id=self.id,
             symbol=self.symbol,
@@ -80,6 +86,8 @@ class GeneratedSignal:
             take_profit_3=self.take_profit_3,
             created_at=self.created_at,
             ai_confidence=self.ai_confidence,
+            order_type=self.order_type,
+            is_filled=is_filled,
         )
 
     def to_telegram_message(self) -> str:
@@ -89,6 +97,14 @@ class GeneratedSignal:
         unit_label = "lot" if "XAU" in self.symbol.upper() else ("BTC" if "BTC" in self.symbol.upper() else "lot")
 
         reasons_bullet = "\n".join([f"  • {r}" for r in self.confluence_reasons[:6]])
+
+        limit_notice = ""
+        if "LIMIT" in self.order_type.upper():
+            limit_notice = (
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📌 <b>LIMIT QOIDASI:</b> Narx impulsda. Cho'qqidan kirmaslik uchun "
+                f"<code>{self.entry_price:.2f}</code> zonasiga Retest berganda buyurtma ochiladi. Shoshilmang!\n"
+            )
 
         msg = (
             f"⚡ <b>CYBER TRADE — AI TRADING SIGNAL</b> ⚡\n"
@@ -100,10 +116,11 @@ class GeneratedSignal:
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"📥 <b>Kirish narxi (Entry):</b> <code>{self.entry_price:.2f}</code>\n"
             f"🛑 <b>Stop-Loss (SL):</b> <code>{self.stop_loss:.2f}</code>\n"
-            f"🎯 <b>Take-Profit 1:</b> <code>{self.take_profit_1:.2f}</code> (1:1.5)\n"
-            f"🎯 <b>Take-Profit 2:</b> <code>{self.take_profit_2:.2f}</code> (1:2.5)\n"
-            f"🎯 <b>Take-Profit 3:</b> <code>{self.take_profit_3:.2f}</code> (1:4.0)\n"
-            f"⚖️ <b>Risk:Reward:</b> <code>1:{self.risk_reward:.1f}</code>\n"
+            f"🎯 <b>Take-Profit 1:</b> <code>{self.take_profit_1:.2f}</code> (1:1.2 BE)\n"
+            f"🎯 <b>Take-Profit 2 (Asosiy Likvidlik):</b> <code>{self.take_profit_2:.2f}</code> (1:{self.risk_reward:.1f})\n"
+            f"🎯 <b>Take-Profit 3 (Runner):</b> <code>{self.take_profit_3:.2f}</code>\n"
+            f"⚖️ <b>Real Risk:Reward:</b> <code>1:{self.risk_reward:.1f}</code>\n"
+            f"{limit_notice}"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"📊 <b>Tavsiya Etilgan Lot (1% Xavf / Risk):</b>\n"
             f"  • $1,000 depozit: <code>{self.lot_1k:.2f} {unit_label}</code>\n"
@@ -122,29 +139,7 @@ class GeneratedSignal:
         return msg
 
 
-SIGNAL_MODES = {
-    "aggressive": {
-        "id": "aggressive",
-        "name": "⚡ Agressiv (Scalp 50%+)",
-        "threshold": 0.50,
-        "min_rr": 1.5,
-        "desc": "Ko'proq signallar, tezkor kirish-chiqishlar (50%+)",
-    },
-    "standard": {
-        "id": "standard",
-        "name": "⚖️ Standart (Balansli 58%+)",
-        "threshold": 0.58,
-        "min_rr": 1.8,
-        "desc": "Oltin o'rtalik: A+ va sifatli Trend signallar (58%+)",
-    },
-    "conservative": {
-        "id": "conservative",
-        "name": "🛡️ Konservativ (Sniper 68%+)",
-        "threshold": 0.68,
-        "min_rr": 2.2,
-        "desc": "Faqat eng yuqori ishonchli A+ Sniper signallar (68%+)",
-    },
-}
+from src.bot_menu import SIGNAL_MODES
 
 
 class SignalEngine:
@@ -253,8 +248,8 @@ class SignalEngine:
             "total_bars": len(df),
         }
 
-        # Crypto must be fresh within 45 minutes
-        if is_crypto and age_minutes > 45:
+        # Crypto must be fresh within 15 minutes (ensures real-time Binance/Bybit precision)
+        if is_crypto and age_minutes > 15:
             return False, f"Kriptovalyuta narxi eskirgan (oxirgi sham {int(age_minutes)} daqiqa oldin)", meta
 
         # Forex/Gold on weekends: allowed for analysis, but marked
@@ -262,8 +257,8 @@ class SignalEngine:
             meta["weekend_closed"] = True
             return True, "Bozor dam olish kunida yopiq (Juma yopilish narxlari)", meta
 
-        # Forex/Gold on weekdays must be fresh within 45 minutes
-        if not is_crypto and not is_weekend and age_minutes > 45:
+        # Forex/Gold on weekdays must be fresh within 20 minutes
+        if not is_crypto and not is_weekend and age_minutes > 20:
             return False, f"Bozor narxi eskirgan (oxirgi yangilanish {int(age_minutes)} daqiqa oldin)", meta
 
         return True, "Ma'lumotlar sifati a'lo va yangi", meta
@@ -617,10 +612,28 @@ class SignalEngine:
         audit["gates_passed"].append(f"MTF Konsensus: {target_direction} yo'nalishi H4 ({h4_trend}) va H1 ({h1_trend}) ga mos")
 
         # ---------------------------------------------------------------------
-        # Gate 5: Dynamic Confidence & Mode Filter
+        # Gate 5: Dynamic Confidence, Self-Learning Memory & Mode Filter
         # ---------------------------------------------------------------------
         cfg = SIGNAL_MODES.get(self.active_mode, SIGNAL_MODES["standard"])
         mode_threshold = cfg["threshold"]
+        required_min_rr = cfg.get("min_rr", 1.8)
+
+        # Check Autonomous Self-Learner for Adaptive Capital Protection & Learned Penalties
+        try:
+            from src.self_learner import self_learner
+            adaptive_guard = self_learner.get_adaptive_capital_protection()
+            if adaptive_guard["is_active"]:
+                mode_threshold += adaptive_guard["threshold_boost"]
+                required_min_rr = max(required_min_rr, required_min_rr + adaptive_guard["min_rr_boost"])
+                audit["gates_passed"].append(f"🛡️ Adaptiv Himoya: {adaptive_guard['status_badge']}")
+
+            # Check if this setup matches historical negative patterns
+            pattern_penalty, penalty_reason = self_learner.evaluate_setup(symbol, target_direction, meta)
+            if pattern_penalty > 0:
+                ml_confidence = max(0.0, ml_confidence - pattern_penalty)
+                confluence_reasons.append(f"⚠️ O'z-o'zini o'rganish xotirasi: -{pattern_penalty*100:.0f}% jarima ({penalty_reason})")
+        except Exception as e:
+            logger.debug(f"Self-learner evaluation skipped: {e}")
 
         adjusted_confidence = ml_confidence + (macro_report.confluence_boost if macro_report.confluence_boost > 0 else 0)
         if has_smc_setup:
@@ -650,50 +663,85 @@ class SignalEngine:
         # ---------------------------------------------------------------------
         # Gate 6: Risk-to-Reward and Invalidation Calculation
         # ---------------------------------------------------------------------
-        entry = current_price
-        order_type = f"MARKET {target_direction}"
+        ob_t = None
+        ob_b = None
 
-        last_swing_high = float(df_smc["last_swing_high"][-1]) if "last_swing_high" in df_smc.columns and df_smc["last_swing_high"][-1] is not None else None
-        last_swing_low = float(df_smc["last_swing_low"][-1]) if "last_swing_low" in df_smc.columns and df_smc["last_swing_low"][-1] is not None else None
-        min_buffer = atr * 0.3
-
-        if target_direction == "BUY":
-            if last_swing_low and last_swing_low < entry and (entry - last_swing_low) < (atr * 3.0):
-                stop_loss = last_swing_low - min_buffer
-                confluence_reasons.append("SL: Swing Low likvidlik chegarasi ostida")
+        if has_smc_setup and smc_signal is not None and smc_signal.signal_type == target_direction:
+            order_type = smc_signal.order_type
+            if "LIMIT" in order_type.upper():
+                order_type = f"{target_direction} LIMIT"
+                entry = smc_signal.entry_price
+                confluence_reasons.append(f"📌 Limit Retest: {order_type} @ {entry:.2f} (OB/FVG zonasi retesti kutilmoqda)")
             else:
-                stop_loss = entry - (atr * 1.5)
-                confluence_reasons.append("SL: Volatillik (1.5x ATR) buferi asosida")
+                order_type = f"MARKET {target_direction}"
+                entry = current_price
+                confluence_reasons.append(f"⚡ Bozor retest zonasida: MARKET {target_direction} tasdiqlandi")
 
-            sl_dist = entry - stop_loss
-            tp1 = entry + (sl_dist * 1.5)
-            tp2 = entry + (sl_dist * 2.5)
-            tp3 = entry + (sl_dist * 4.0)
-            rr = (tp2 - entry) / sl_dist if sl_dist > 0 else 0
+            stop_loss = smc_signal.stop_loss
+            tp2 = smc_signal.take_profit
+            sl_dist = abs(entry - stop_loss)
+            if sl_dist <= 0:
+                sl_dist = atr * 1.0
 
-        else:  # SELL
-            if last_swing_high and last_swing_high > entry and (last_swing_high - entry) < (atr * 3.0):
-                stop_loss = last_swing_high + min_buffer
-                confluence_reasons.append("SL: Swing High likvidlik chegarasi tepasida")
+            tp1 = entry + (sl_dist * 1.2) if target_direction == "BUY" else entry - (sl_dist * 1.2)
+            tp3 = entry + (sl_dist * 3.5) if target_direction == "BUY" else entry - (sl_dist * 3.5)
+
+            if target_direction == "BUY":
+                rr = (tp2 - entry) / sl_dist if sl_dist > 0 else 0
             else:
-                stop_loss = entry + (atr * 1.5)
-                confluence_reasons.append("SL: Volatillik (1.5x ATR) buferi asosida")
+                rr = (entry - tp2) / sl_dist if sl_dist > 0 else 0
 
-            sl_dist = stop_loss - entry
-            tp1 = entry - (sl_dist * 1.5)
-            tp2 = entry - (sl_dist * 2.5)
-            tp3 = entry - (sl_dist * 4.0)
-            rr = (entry - tp2) / sl_dist if sl_dist > 0 else 0
+            ob_t = smc_signal.ob_top or smc_signal.fvg_top
+            ob_b = smc_signal.ob_bottom or smc_signal.fvg_bottom
 
-        if rr < self.min_rr:
-            reason = f"Risk:Reward nisbati (1:{rr:.1f}) minimal me'yordan (1:{self.min_rr:.1f}) kam"
+        else:
+            # Fallback for ML/Momentum setups without primary SMC structure
+            entry = current_price
+            order_type = f"MARKET {target_direction}"
+            min_buffer = atr * 0.25
+
+            if target_direction == "BUY":
+                last_swing_low = float(df_smc["last_swing_low"][-1]) if "last_swing_low" in df_smc.columns and df_smc["last_swing_low"][-1] is not None else None
+                if last_swing_low and last_swing_low < entry and (entry - last_swing_low) < (atr * 3.0):
+                    stop_loss = last_swing_low - min_buffer
+                    confluence_reasons.append("SL: Swing Low likvidlik chegarasi ostida")
+                else:
+                    stop_loss = entry - (atr * 1.5)
+                    confluence_reasons.append("SL: Volatillik (1.5x ATR) buferi asosida")
+
+                sl_dist = entry - stop_loss
+                recent_highs = [float(h) for h in df_smc.tail(80)["high"].to_list() if float(h) > entry + (sl_dist * 1.4)]
+                tp2 = min(recent_highs) if recent_highs else (entry + (sl_dist * 2.2))
+                tp1 = entry + (sl_dist * 1.2)
+                tp3 = entry + (sl_dist * 3.5)
+                rr = (tp2 - entry) / sl_dist if sl_dist > 0 else 0
+
+            else:  # SELL
+                last_swing_high = float(df_smc["last_swing_high"][-1]) if "last_swing_high" in df_smc.columns and df_smc["last_swing_high"][-1] is not None else None
+                if last_swing_high and last_swing_high > entry and (last_swing_high - entry) < (atr * 3.0):
+                    stop_loss = last_swing_high + min_buffer
+                    confluence_reasons.append("SL: Swing High likvidlik chegarasi tepasida")
+                else:
+                    stop_loss = entry + (atr * 1.5)
+                    confluence_reasons.append("SL: Volatillik (1.5x ATR) buferi asosida")
+
+                sl_dist = stop_loss - entry
+                recent_lows = [float(l) for l in df_smc.tail(80)["low"].to_list() if float(l) < entry - (sl_dist * 1.4)]
+                tp2 = max(recent_lows) if recent_lows else (entry - (sl_dist * 2.2))
+                tp1 = entry - (sl_dist * 1.2)
+                tp3 = entry - (sl_dist * 3.5)
+                rr = (entry - tp2) / sl_dist if sl_dist > 0 else 0
+
+        effective_min_rr = max(self.min_rr, required_min_rr)
+        if rr < effective_min_rr:
+            reason = f"Haqiqiy Risk:Reward nisbati (1:{rr:.1f}) minimal me'yordan (1:{effective_min_rr:.1f}) kam. Qarshilik/likvidlik juda yaqin."
             audit["gates_failed"].append(reason)
             audit["summary_reason"] = reason
             self.latest_diagnostics[symbol] = audit
             meta["gate_reason"] = reason
             return None, meta
 
-        audit["gates_passed"].append(f"R:R Nisbati: 1:{rr:.1f} (A'lo)")
+        audit["gates_passed"].append(f"R:R Nisbati: 1:{rr:.1f} (Likvidlik maqsadiga mos)")
 
         # Confluence context
         confluence_reasons.append(f"4H Trend: {h4_trend} | 1H Struktura: {h1_trend}")
@@ -704,7 +752,7 @@ class SignalEngine:
 
         lot_1k, lot_5k, lot_10k = self._calculate_recommended_lots(symbol, entry, stop_loss)
 
-        # Generate chart
+        # Generate chart with visual OB zone
         chart_path = self.chart_generator.generate_signal_chart(
             df=df_smc,
             symbol=symbol,
@@ -716,6 +764,9 @@ class SignalEngine:
             take_profit_2=tp2,
             ai_confidence=adjusted_confidence,
             smc_reasons=confluence_reasons,
+            ob_top=ob_t,
+            ob_bottom=ob_b,
+            order_type=order_type,
         )
 
         signal = GeneratedSignal(
@@ -740,6 +791,8 @@ class SignalEngine:
             lot_1k=lot_1k,
             lot_5k=lot_5k,
             lot_10k=lot_10k,
+            ob_top=ob_t,
+            ob_bottom=ob_b,
             chart_image_path=chart_path,
         )
 
@@ -761,16 +814,8 @@ class SignalEngine:
         Fully answers the user requirement for '/why <symbol>'.
         """
         sym = symbol.upper().replace("/", "").replace("-", "")
-        # Fetch fresh data
-        fetch_sym = sym
-        if "BTC" in sym:
-            fetch_sym = "BTC-USD"
-        elif "ETH" in sym:
-            fetch_sym = "ETH-USD"
-        elif "XAU" in sym or "GOLD" in sym:
-            fetch_sym = "GC=F"
-
-        df = await data_fetcher.get_market_data(fetch_sym, "15m")
+        # Directly pass sym so data_fetcher uses 0ms Binance for crypto and Spot Gold (XAUUSD=X)
+        df = await data_fetcher.get_market_data(sym, "15m")
         dxy_df = await data_fetcher.get_market_data("DXY", "15m")
 
         if df is None or len(df) < 50:

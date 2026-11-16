@@ -42,7 +42,7 @@ class MacroAgent:
         """
         Determine DXY trend (Bullish/Bearish/Ranging) using EMAs and price action.
         """
-        if dxy_df is None or len(dxy_df) < 50:
+        if dxy_df is None or len(dxy_df) < 20:
             return "NEUTRAL", 0.0
 
         close = dxy_df["close"].to_numpy()
@@ -50,7 +50,10 @@ class MacroAgent:
 
         # Simple fast/slow EMA calculation using numpy
         def calc_ema(arr, span):
-            alpha = 2 / (span + 1)
+            if len(arr) == 0:
+                return np.array([])
+            effective_span = min(span, len(arr))
+            alpha = 2 / (effective_span + 1)
             ema = [arr[0]]
             for val in arr[1:]:
                 ema.append(alpha * val + (1 - alpha) * ema[-1])
@@ -59,12 +62,15 @@ class MacroAgent:
         ema20 = calc_ema(close, self.ema_fast)
         ema50 = calc_ema(close, self.ema_slow)
 
-        if ema20[-1] > ema50[-1] and current_price > ema20[-1]:
-            trend = "BULLISH"
-        elif ema20[-1] < ema50[-1] and current_price < ema20[-1]:
-            trend = "BEARISH"
+        if len(ema20) > 0 and len(ema50) > 0:
+            if ema20[-1] > ema50[-1] and current_price > ema20[-1]:
+                trend = "BULLISH"
+            elif ema20[-1] < ema50[-1] and current_price < ema20[-1]:
+                trend = "BEARISH"
+            else:
+                trend = "RANGING"
         else:
-            trend = "RANGING"
+            trend = "NEUTRAL"
 
         return trend, current_price
 

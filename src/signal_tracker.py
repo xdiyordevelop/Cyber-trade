@@ -2,6 +2,8 @@
 Cyber Trade - Precision Virtual Signal Tracker & Performance Auditor
 =====================================================================
 Calculates signal metrics according to strict professional prop-firm accounting rules:
+- Intra-candle High/Low Wick monitoring (never misses SL or TP touch!).
+- Limit Order Retest execution: detects when pending Buy/Sell Limit orders are filled or expired.
 - TP1 Hit: 50% partial profit secured (+0.75R based on 1:1.5 target).
 - Breakeven Activation: Stop-loss automatically updated to Entry Price (0 risk).
 - TP2 Hit: Remaining 50% secured (+1.25R based on 1:2.5 target). Total: +2.0R!
@@ -15,7 +17,10 @@ from pathlib import Path
 from datetime import datetime, timezone
 from dataclasses import dataclass, asdict
 from typing import List, Dict, Optional, Any
-from loguru import logger
+try:
+    from loguru import logger
+except ImportError:
+    from src.logger import logger
 from src.database import db
 
 
@@ -29,6 +34,8 @@ def calculate_pips(symbol: str, entry: float, current: float, direction: str) ->
         return diff               # Bitcoinda $1 = 1 point/pip
     if "ETH" in sym:
         return diff * 10.0        # Ethereumda $0.10 = 1 pip
+    if "SOL" in sym:
+        return diff * 10.0        # Solana
     return diff * 10000.0         # Standart Forex
 
 
@@ -45,12 +52,14 @@ class ActiveSignal:
     take_profit_3: float
     created_at: str
     ai_confidence: float
+    order_type: str = "MARKET"   # "MARKET" or "BUY LIMIT" / "SELL LIMIT"
+    is_filled: bool = True       # False for pending Limit orders until triggered
     tp1_hit: bool = False
     breakeven_active: bool = False
     tp2_hit: bool = False
     tp3_hit: bool = False
     closed: bool = False
-    close_reason: str = ""      # "TP2_WIN", "TP1_BE", "SL_LOSS", "EXPIRED", "MANUAL_CLOSE"
+    close_reason: str = ""      # "TP2_WIN", "TP1_BE", "SL_LOSS", "EXPIRED", "MANUAL_CLOSE", "LIMIT_EXPIRED"
     close_price: float = 0.0
     profit_r: float = 0.0
     last_pips: float = 0.0
@@ -100,7 +109,8 @@ class SignalTracker:
         clean_sym = symbol.upper().replace("/", "").replace("-", "")
         for s in self.active_signals:
             curr_clean = s.symbol.upper().replace("/", "").replace("-", "")
-            if curr_clean == clean_sym and not s.closed:
+            # Only consider active if not closed and still has initial risk (not yet at breakeven)
+            if curr_clean == clean_sym and not s.closed and not s.breakeven_active:
                 return True
         return False
 
@@ -110,31 +120,62 @@ class SignalTracker:
             logger.warning(f"Active signal already exists for {signal.symbol}, rejecting duplicate.")
             return
 
+        # If it's a Limit order, mark it as pending fill
+        if "LIMIT" in signal.order_type.upper():
+            signal.is_filled = False
+
         self.active_signals.append(signal)
         self._save_state()
         db.log_signal(signal)
-        logger.info(f"Registered active signal: {signal.symbol} {signal.direction} @ {signal.entry_price}")
+        logger.info(f"Registered active signal: {signal.symbol} {signal.order_type} @ {signal.entry_price}")
+
+    def _finalize_trade_closure(
+        self,
+        sig: ActiveSignal,
+        close_reason: str,
+        close_price: float,
+        profit_r: float,
+    ):
+        """Mark signal closed in memory, update DB, and invoke AI self-learner."""
+        sig.closed = True
+        sig.close_reason = close_reason
+        sig.close_price = close_price
+        sig.profit_r = profit_r
+        self.closed_signals.append(sig)
+        db.close_signal(sig.id, close_reason, close_price, profit_r, sig.highest_pips)
+        try:
+            from src.self_learner import self_learner
+            self_learner.on_trade_closed(sig, close_reason, close_price, profit_r)
+        except Exception as e:
+            logger.debug(f"Self-learner hook skipped: {e}")
 
     def clear_all_signals(self) -> int:
         """Manually close all open active signals."""
         count = len(self.active_signals)
         for s in self.active_signals:
-            s.closed = True
-            s.close_reason = "MANUAL_CLOSE"
-            self.closed_signals.append(s)
-            db.close_signal(s.id, "MANUAL_CLOSE", s.entry_price, s.profit_r, s.highest_pips)
+            self._finalize_trade_closure(s, "MANUAL_CLOSE", s.entry_price, s.profit_r)
         self.active_signals = []
         self._save_state()
         return count
 
-    def update_price(self, symbol: str, current_price: float) -> List[Dict[str, Any]]:
+    def update_price(
+        self,
+        symbol: str,
+        current_price: float,
+        high_price: Optional[float] = None,
+        low_price: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
         """
-        Check active signals for this symbol against current market price using
-        prop-firm precision accounting (TP1 -> BE -> TP2).
+        Check active signals for this symbol against current market price and candle extremes
+        using prop-firm precision accounting (Intra-candle Wicks: High/Low -> TP1 -> BE -> TP2).
         """
         alerts = []
         remaining_signals = []
         now_utc = datetime.now(timezone.utc)
+
+        # High/Low fallback
+        high_check = high_price if high_price is not None else current_price
+        low_check = low_price if low_price is not None else current_price
 
         for sig in self.active_signals:
             if sig.symbol != symbol or sig.closed:
@@ -146,7 +187,7 @@ class SignalTracker:
                 risk = 0.001
 
             # -------------------------------------------------------------
-            # 0. Expiration Check (24 soatdan oshsa signal yakunlanadi)
+            # 0. Expiration Check (24 hours timeout)
             # -------------------------------------------------------------
             try:
                 created_dt = datetime.fromisoformat(sig.created_at)
@@ -156,17 +197,18 @@ class SignalTracker:
                     sig.close_reason = "EXPIRED"
                     sig.close_price = current_price
 
-                    # Accounting on expiration
-                    floating_diff = (current_price - sig.entry_price) if sig.direction == "BUY" else (sig.entry_price - current_price)
-                    floating_r = floating_diff / risk
-                    if sig.tp1_hit:
-                        # 50% was closed at TP1 (+0.75R), remaining 50% closed at current price
+                    if not sig.is_filled:
+                        sig.profit_r = 0.0
+                    elif sig.tp1_hit:
+                        floating_diff = (current_price - sig.entry_price) if sig.direction == "BUY" else (sig.entry_price - current_price)
+                        floating_r = floating_diff / risk
                         sig.profit_r = round(0.75 + (max(0.0, floating_r) * 0.5), 2)
                     else:
+                        floating_diff = (current_price - sig.entry_price) if sig.direction == "BUY" else (sig.entry_price - current_price)
+                        floating_r = floating_diff / risk
                         sig.profit_r = round(max(-1.0, floating_r), 2)
 
-                    self.closed_signals.append(sig)
-                    db.close_signal(sig.id, "EXPIRED", current_price, sig.profit_r, sig.highest_pips)
+                    self._finalize_trade_closure(sig, "EXPIRED", current_price, sig.profit_r)
                     alerts.append({
                         "type": "SIGNAL_EXPIRED",
                         "signal": sig,
@@ -181,13 +223,79 @@ class SignalTracker:
             except Exception:
                 pass
 
+            # -------------------------------------------------------------
+            # 1. Pending Limit Order Fill Verification
+            # -------------------------------------------------------------
+            if not sig.is_filled:
+                if sig.direction == "BUY":
+                    # Buy limit filled if low dipped to or below entry
+                    if low_check <= sig.entry_price:
+                        sig.is_filled = True
+                        alerts.append({
+                            "type": "LIMIT_FILLED",
+                            "signal": sig,
+                            "message": (
+                                f"📥 <b>BUY LIMIT ISHGA TUSHDI:</b> #{sig.symbol}\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"Narx retest darajasiga (<code>{sig.entry_price:.2f}</code>) kirdi va buyurtma to'liq ochildi!\n"
+                                f"🛑 Stop-Loss: <code>{sig.stop_loss:.2f}</code>\n"
+                                f"🎯 TP1: <code>{sig.take_profit_1:.2f}</code> | TP2: <code>{sig.take_profit_2:.2f}</code>"
+                            ),
+                        })
+                    # Expire limit if price already ran 2.5x ATR away without retest
+                    elif high_check >= sig.entry_price + (risk * 2.2):
+                        self._finalize_trade_closure(sig, "LIMIT_EXPIRED", current_price, 0.0)
+                        alerts.append({
+                            "type": "LIMIT_CANCELLED",
+                            "signal": sig,
+                            "message": (
+                                f"ℹ️ <b>BUY LIMIT BEKOR QILINDI:</b> #{sig.symbol}\n"
+                                f"Narx kirish zonasiga retestsiz maqsadga qarab ketdi. "
+                                f"Xavfsizlik maqsadida limit buyurtma bekor qilindi."
+                            ),
+                        })
+                        continue
+
+                elif sig.direction == "SELL":
+                    # Sell limit filled if high reached or exceeded entry
+                    if high_check >= sig.entry_price:
+                        sig.is_filled = True
+                        alerts.append({
+                            "type": "LIMIT_FILLED",
+                            "signal": sig,
+                            "message": (
+                                f"📥 <b>SELL LIMIT ISHGA TUSHDI:</b> #{sig.symbol}\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"Narx retest darajasiga (<code>{sig.entry_price:.2f}</code>) kirdi va buyurtma to'liq ochildi!\n"
+                                f"🛑 Stop-Loss: <code>{sig.stop_loss:.2f}</code>\n"
+                                f"🎯 TP1: <code>{sig.take_profit_1:.2f}</code> | TP2: <code>{sig.take_profit_2:.2f}</code>"
+                            ),
+                        })
+                    elif low_check <= sig.entry_price - (risk * 2.2):
+                        self._finalize_trade_closure(sig, "LIMIT_EXPIRED", current_price, 0.0)
+                        alerts.append({
+                            "type": "LIMIT_CANCELLED",
+                            "signal": sig,
+                            "message": (
+                                f"ℹ️ <b>SELL LIMIT BEKOR QILINDI:</b> #{sig.symbol}\n"
+                                f"Narx kirish zonasiga retestsiz maqsadga qarab ketdi. "
+                                f"Xavfsizlik maqsadida limit buyurtma bekor qilindi."
+                            ),
+                        })
+                        continue
+
+                # If still not filled, keep monitoring
+                if not sig.is_filled:
+                    remaining_signals.append(sig)
+                    continue
+
             # Calculate floating pips
             pips = calculate_pips(sig.symbol, sig.entry_price, current_price, sig.direction)
             sig.last_pips = pips
             sig.highest_pips = max(sig.highest_pips, pips)
 
             # -------------------------------------------------------------
-            # 1. Milestone Progress Notification (30, 60, 100, 200, 350, 500 pips)
+            # 2. Milestone Progress Notification
             # -------------------------------------------------------------
             milestones = [30, 60, 100, 150, 250, 400, 600]
             for m in milestones:
@@ -209,77 +317,12 @@ class SignalTracker:
                     break
 
             # -------------------------------------------------------------
-            # 2. Buy Trades Execution
+            # 3. Active Buy Trades Execution
             # -------------------------------------------------------------
             if sig.direction == "BUY":
-                # Condition A: TP2 Hit (Target Achieved)
-                if current_price >= sig.take_profit_2:
-                    sig.tp2_hit = True
-                    sig.closed = True
-                    sig.close_reason = "TP2_WIN"
-                    sig.close_price = current_price
-                    # 50% at TP1 (1.5R * 0.5 = +0.75R) + 50% at TP2 (2.5R * 0.5 = +1.25R) = +2.0R
-                    sig.profit_r = 2.0
-                    self.closed_signals.append(sig)
-                    db.close_signal(sig.id, "TP2_WIN", current_price, sig.profit_r, sig.highest_pips)
-                    alerts.append({
-                        "type": "TP2_HIT",
-                        "signal": sig,
-                        "message": (
-                            f"🎯🎯 <b>MUVAFFAQIYAT! TP2 TO'LIQ URILDI:</b> #{sig.symbol}\n"
-                            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                            f"Yo'nalish: <b>BUY</b> | Narx: <code>{current_price:.2f}</code>\n"
-                            f"💰 <b>Natija: +2.0R (+{pips:.0f} pips) SOF FOYDA!</b>\n"
-                            f"Savdo reja bo'yicha to'liq yakunlandi va yopildi. Tabriklaymiz! 🏆"
-                        ),
-                    })
-                    continue
-
-                # Condition B: TP1 Hit (Secure 50% profit & Move SL to Breakeven)
-                if current_price >= sig.take_profit_1 and not sig.tp1_hit:
-                    sig.tp1_hit = True
-                    sig.breakeven_active = True
-                    alerts.append({
-                        "type": "TP1_HIT",
-                        "signal": sig,
-                        "message": (
-                            f"⚡ <b>TP1 URILDI:</b> #{sig.symbol}\n"
-                            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                            f"Yo'nalish: <b>BUY</b> | Narx: <code>{current_price:.2f}</code> (+{pips:.0f} pips)\n"
-                            f"🔔 <b>QAT'IY QOIDA:</b>\n"
-                            f"1. Stop-Lossni Kirish narxiga (<code>{sig.entry_price:.2f}</code> — 0 ga) suring!\n"
-                            f"2. Pozitsiyaning 50% qismini fiksatsiya qiling (+0.75R daromad olindi).\n"
-                            f"Qolgan 50% qismi TP2 maqsadiga xavfsiz qoldiriladi."
-                        ),
-                    })
-
-                # Condition C: Retrace to Breakeven (after TP1 was hit)
-                if sig.breakeven_active and current_price <= sig.entry_price:
-                    sig.closed = True
-                    sig.close_reason = "TP1_BE"
-                    sig.close_price = current_price
-                    sig.profit_r = 0.75  # Kept the 50% from TP1
-                    self.closed_signals.append(sig)
-                    db.close_signal(sig.id, "TP1_BE", current_price, sig.profit_r, sig.highest_pips)
-                    alerts.append({
-                        "type": "BREAKEVEN_HIT",
-                        "signal": sig,
-                        "message": (
-                            f"🛡️ <b>BREAKEVEN (0 GA) YOPILDI:</b> #{sig.symbol}\n"
-                            f"Yo'nalish: <b>BUY</b> | Qaytdi: <code>{current_price:.2f}</code>\n"
-                            f"Natija: <b>+0.75R SOF FOYDA</b> (TP1 da 50% foyda olingan, qolgani zararsiz yopildi)."
-                        ),
-                    })
-                    continue
-
-                # Condition D: Direct Stop Loss Hit (before TP1)
-                if not sig.breakeven_active and current_price <= sig.stop_loss:
-                    sig.closed = True
-                    sig.close_reason = "SL_LOSS"
-                    sig.close_price = current_price
-                    sig.profit_r = -1.0
-                    self.closed_signals.append(sig)
-                    db.close_signal(sig.id, "SL_LOSS", current_price, -1.0, sig.highest_pips)
+                # Check Direct Stop Loss Hit First (Wick low touch before Breakeven)
+                if not sig.breakeven_active and low_check <= sig.stop_loss:
+                    self._finalize_trade_closure(sig, "SL_LOSS", sig.stop_loss, -1.0)
                     alerts.append({
                         "type": "SL_HIT",
                         "signal": sig,
@@ -292,43 +335,36 @@ class SignalTracker:
                     })
                     continue
 
-            # -------------------------------------------------------------
-            # 3. Sell Trades Execution
-            # -------------------------------------------------------------
-            elif sig.direction == "SELL":
-                # Condition A: TP2 Hit (Target Achieved)
-                if current_price <= sig.take_profit_2:
+                # Check TP2 Hit (Target Achieved)
+                if high_check >= sig.take_profit_2:
                     sig.tp2_hit = True
-                    sig.closed = True
-                    sig.close_reason = "TP2_WIN"
-                    sig.close_price = current_price
-                    sig.profit_r = 2.0
-                    self.closed_signals.append(sig)
-                    db.close_signal(sig.id, "TP2_WIN", current_price, sig.profit_r, sig.highest_pips)
+                    self._finalize_trade_closure(sig, "TP2_WIN", sig.take_profit_2, 2.0)
                     alerts.append({
                         "type": "TP2_HIT",
                         "signal": sig,
                         "message": (
                             f"🎯🎯 <b>MUVAFFAQIYAT! TP2 TO'LIQ URILDI:</b> #{sig.symbol}\n"
                             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                            f"Yo'nalish: <b>SELL</b> | Narx: <code>{current_price:.2f}</code>\n"
+                            f"Yo'nalish: <b>BUY</b> | Narx: <code>{sig.take_profit_2:.2f}</code>\n"
                             f"💰 <b>Natija: +2.0R (+{pips:.0f} pips) SOF FOYDA!</b>\n"
                             f"Savdo reja bo'yicha to'liq yakunlandi va yopildi. Tabriklaymiz! 🏆"
                         ),
                     })
                     continue
 
-                # Condition B: TP1 Hit
-                if current_price <= sig.take_profit_1 and not sig.tp1_hit:
+                # Check TP1 Hit (Secure 50% profit & Move SL to Breakeven)
+                just_hit_tp1 = False
+                if high_check >= sig.take_profit_1 and not sig.tp1_hit:
                     sig.tp1_hit = True
                     sig.breakeven_active = True
+                    just_hit_tp1 = True
                     alerts.append({
                         "type": "TP1_HIT",
                         "signal": sig,
                         "message": (
                             f"⚡ <b>TP1 URILDI:</b> #{sig.symbol}\n"
                             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                            f"Yo'nalish: <b>SELL</b> | Narx: <code>{current_price:.2f}</code> (+{pips:.0f} pips)\n"
+                            f"Yo'nalish: <b>BUY</b> | Narx: <code>{sig.take_profit_1:.2f}</code> (+{pips:.0f} pips)\n"
                             f"🔔 <b>QAT'IY QOIDA:</b>\n"
                             f"1. Stop-Lossni Kirish narxiga (<code>{sig.entry_price:.2f}</code> — 0 ga) suring!\n"
                             f"2. Pozitsiyaning 50% qismini fiksatsiya qiling (+0.75R daromad olindi).\n"
@@ -336,33 +372,27 @@ class SignalTracker:
                         ),
                     })
 
-                # Condition C: Retrace to Breakeven
-                if sig.breakeven_active and current_price >= sig.entry_price:
-                    sig.closed = True
-                    sig.close_reason = "TP1_BE"
-                    sig.close_price = current_price
-                    sig.profit_r = 0.75
-                    self.closed_signals.append(sig)
-                    db.close_signal(sig.id, "TP1_BE", current_price, sig.profit_r, sig.highest_pips)
+                # Check Retrace to Breakeven (only after TP1 was hit, on subsequent retrace)
+                if sig.breakeven_active and not just_hit_tp1 and (current_price <= sig.entry_price or low_check <= sig.entry_price):
+                    self._finalize_trade_closure(sig, "TP1_BE", sig.entry_price, 0.75)
                     alerts.append({
                         "type": "BREAKEVEN_HIT",
                         "signal": sig,
                         "message": (
                             f"🛡️ <b>BREAKEVEN (0 GA) YOPILDI:</b> #{sig.symbol}\n"
-                            f"Yo'nalish: <b>SELL</b> | Qaytdi: <code>{current_price:.2f}</code>\n"
+                            f"Yo'nalish: <b>BUY</b> | Qaytdi: <code>{sig.entry_price:.2f}</code>\n"
                             f"Natija: <b>+0.75R SOF FOYDA</b> (TP1 da 50% foyda olingan, qolgani zararsiz yopildi)."
                         ),
                     })
                     continue
 
-                # Condition D: Direct Stop Loss Hit
-                if not sig.breakeven_active and current_price >= sig.stop_loss:
-                    sig.closed = True
-                    sig.close_reason = "SL_LOSS"
-                    sig.close_price = current_price
-                    sig.profit_r = -1.0
-                    self.closed_signals.append(sig)
-                    db.close_signal(sig.id, "SL_LOSS", current_price, -1.0, sig.highest_pips)
+            # -------------------------------------------------------------
+            # 4. Active Sell Trades Execution
+            # -------------------------------------------------------------
+            elif sig.direction == "SELL":
+                # Check Direct Stop Loss Hit First
+                if not sig.breakeven_active and high_check >= sig.stop_loss:
+                    self._finalize_trade_closure(sig, "SL_LOSS", sig.stop_loss, -1.0)
                     alerts.append({
                         "type": "SL_HIT",
                         "signal": sig,
@@ -371,6 +401,57 @@ class SignalTracker:
                             f"Yo'nalish: <b>SELL</b>\n"
                             f"Kirish: <code>{sig.entry_price:.2f}</code> | SL: <code>{sig.stop_loss:.2f}</code>\n"
                             f"Natija: -1.0R (Risk qoidasi buzilmadi, yo'qotish 1% bilan cheklandi)."
+                        ),
+                    })
+                    continue
+
+                # Check TP2 Hit
+                if low_check <= sig.take_profit_2:
+                    sig.tp2_hit = True
+                    self._finalize_trade_closure(sig, "TP2_WIN", sig.take_profit_2, 2.0)
+                    alerts.append({
+                        "type": "TP2_HIT",
+                        "signal": sig,
+                        "message": (
+                            f"🎯🎯 <b>MUVAFFAQIYAT! TP2 TO'LIQ URILDI:</b> #{sig.symbol}\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"Yo'nalish: <b>SELL</b> | Narx: <code>{sig.take_profit_2:.2f}</code>\n"
+                            f"💰 <b>Natija: +2.0R (+{pips:.0f} pips) SOF FOYDA!</b>\n"
+                            f"Savdo reja bo'yicha to'liq yakunlandi va yopildi. Tabriklaymiz! 🏆"
+                        ),
+                    })
+                    continue
+
+                # Check TP1 Hit
+                just_hit_tp1_sell = False
+                if low_check <= sig.take_profit_1 and not sig.tp1_hit:
+                    sig.tp1_hit = True
+                    sig.breakeven_active = True
+                    just_hit_tp1_sell = True
+                    alerts.append({
+                        "type": "TP1_HIT",
+                        "signal": sig,
+                        "message": (
+                            f"⚡ <b>TP1 URILDI:</b> #{sig.symbol}\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"Yo'nalish: <b>SELL</b> | Narx: <code>{sig.take_profit_1:.2f}</code> (+{pips:.0f} pips)\n"
+                            f"🔔 <b>QAT'IY QOIDA:</b>\n"
+                            f"1. Stop-Lossni Kirish narxiga (<code>{sig.entry_price:.2f}</code> — 0 ga) suring!\n"
+                            f"2. Pozitsiyaning 50% qismini fiksatsiya qiling (+0.75R daromad olindi).\n"
+                            f"Qolgan 50% qismi TP2 maqsadiga xavfsiz qoldiriladi."
+                        ),
+                    })
+
+                # Check Retrace to Breakeven
+                if sig.breakeven_active and not just_hit_tp1_sell and (current_price >= sig.entry_price or high_check >= sig.entry_price):
+                    self._finalize_trade_closure(sig, "TP1_BE", sig.entry_price, 0.75)
+                    alerts.append({
+                        "type": "BREAKEVEN_HIT",
+                        "signal": sig,
+                        "message": (
+                            f"🛡️ <b>BREAKEVEN (0 GA) YOPILDI:</b> #{sig.symbol}\n"
+                            f"Yo'nalish: <b>SELL</b> | Qaytdi: <code>{sig.entry_price:.2f}</code>\n"
+                            f"Natija: <b>+0.75R SOF FOYDA</b> (TP1 da 50% foyda olingan, qolgani zararsiz yopildi)."
                         ),
                     })
                     continue

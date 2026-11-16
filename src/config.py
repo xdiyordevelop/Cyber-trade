@@ -24,7 +24,7 @@ class MarketConfig:
     
     # Macro symbols for correlation analysis
     dxy_symbol: str = "DX-Y.NYB"  # US Dollar Index (Yahoo Finance)
-    gold_symbol_yf: str = "GC=F"   # Gold Futures / Spot proxy on Yahoo Finance
+    gold_symbol_yf: str = "XAUUSD=X"   # Spot Gold (XAUUSD=X) on Yahoo Finance
     
     # Timeframes to monitor
     primary_timeframe: str = "15m"   # Trigger timeframe

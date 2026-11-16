@@ -14,7 +14,10 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
-from loguru import logger
+try:
+    from loguru import logger
+except ImportError:
+    from src.logger import logger
 
 DB_PATH = Path("data/cyber_trade.db")
 
@@ -75,6 +78,34 @@ class Database:
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # 4. AI Self-Learning Memory Table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS learning_memory (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    signal_id TEXT,
+                    symbol TEXT NOT NULL,
+                    direction TEXT NOT NULL,
+                    outcome TEXT NOT NULL,
+                    net_r REAL DEFAULT 0.0,
+                    pips REAL DEFAULT 0.0,
+                    pattern_key TEXT,
+                    loss_reason TEXT,
+                    lesson_learned TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # 5. Pattern Weights & Repetition Penalties Table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pattern_weights (
+                    pattern_key TEXT PRIMARY KEY,
+                    wins INTEGER DEFAULT 0,
+                    losses INTEGER DEFAULT 0,
+                    penalty REAL DEFAULT 0.0,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -228,6 +259,151 @@ class Database:
         except Exception as e:
             logger.error(f"Error getting DB stats summary: {e}")
             return {"total_signals": 0, "win_rate": 0.0, "total_r": 0.0, "tp_count": 0, "sl_count": 0}
+
+    # -------------------------------------------------------------------------
+    # AI Self-Learning Memory & Pattern Feedback
+    # -------------------------------------------------------------------------
+    def record_learned_lesson(
+        self,
+        signal_id: str,
+        symbol: str,
+        direction: str,
+        outcome: str,
+        net_r: float,
+        pips: float,
+        pattern_key: str,
+        loss_reason: str,
+        lesson_learned: str,
+    ) -> bool:
+        """Store an analyzed trade post-mortem and self-learned lesson."""
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO learning_memory (
+                        signal_id, symbol, direction, outcome, net_r, pips,
+                        pattern_key, loss_reason, lesson_learned
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    signal_id, symbol, direction, outcome, net_r, pips,
+                    pattern_key, loss_reason, lesson_learned
+                ))
+                conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Error recording learned lesson in DB: {e}")
+            return False
+
+    def update_pattern_weight(self, pattern_key: str, is_win: bool, penalty_delta: float):
+        """Reinforce winning patterns or penalize recurring failure patterns."""
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO pattern_weights (pattern_key, wins, losses, penalty, updated_at)
+                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(pattern_key) DO UPDATE SET
+                        wins = wins + ?,
+                        losses = losses + ?,
+                        penalty = MAX(0.0, MIN(0.25, penalty + ?)),
+                        updated_at = CURRENT_TIMESTAMP
+                """, (
+                    pattern_key,
+                    1 if is_win else 0,
+                    0 if is_win else 1,
+                    max(0.0, penalty_delta),
+                    1 if is_win else 0,
+                    0 if is_win else 1,
+                    penalty_delta,
+                ))
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Error updating pattern weight in DB: {e}")
+
+    def get_pattern_penalty(self, pattern_key: str) -> float:
+        """Get accumulated confidence penalty for a recurring high-risk pattern."""
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT penalty FROM pattern_weights WHERE pattern_key = ?", (pattern_key,))
+                row = cursor.fetchone()
+                return float(row["penalty"]) if row else 0.0
+        except Exception:
+            return 0.0
+
+    def get_recent_lessons(self, limit: int = 5) -> List[Dict[str, Any]]:
+        """Fetch latest learned trade post-mortems for AI context and user reports."""
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT id, signal_id, symbol, direction, outcome, net_r, pips,
+                           pattern_key, loss_reason, lesson_learned, created_at
+                    FROM learning_memory
+                    ORDER BY id DESC LIMIT ?
+                """, (limit,))
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Error fetching recent lessons: {e}")
+            return []
+
+    def get_learning_stats(self) -> Dict[str, Any]:
+        """Get summary metrics on self-learning database."""
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) as total FROM learning_memory")
+                total_lessons = cursor.fetchone()["total"]
+
+                cursor.execute("SELECT COUNT(*) as penalized FROM pattern_weights WHERE penalty > 0")
+                penalized_patterns = cursor.fetchone()["penalized"]
+
+                # Rolling stats on last 15 closed signals
+                cursor.execute("""
+                    SELECT profit_r, close_reason
+                    FROM signals
+                    WHERE status = 'CLOSED' AND close_reason != 'LIMIT_EXPIRED'
+                    ORDER BY closed_at DESC LIMIT 15
+                """)
+                recent_trades = cursor.fetchall()
+
+                if not recent_trades:
+                    return {
+                        "total_lessons": total_lessons,
+                        "penalized_patterns": penalized_patterns,
+                        "rolling_trades": 0,
+                        "rolling_win_rate": 0.0,
+                        "loss_streak": 0,
+                    }
+
+                total_recent = len(recent_trades)
+                wins_recent = sum(1 for t in recent_trades if t["profit_r"] > 0)
+                rolling_wr = (wins_recent / total_recent) * 100.0 if total_recent > 0 else 0.0
+
+                # Count current consecutive loss streak
+                loss_streak = 0
+                for t in recent_trades:
+                    if t["profit_r"] <= 0:
+                        loss_streak += 1
+                    else:
+                        break
+
+                return {
+                    "total_lessons": total_lessons,
+                    "penalized_patterns": penalized_patterns,
+                    "rolling_trades": total_recent,
+                    "rolling_win_rate": rolling_wr,
+                    "loss_streak": loss_streak,
+                }
+        except Exception as e:
+            logger.error(f"Error getting learning stats: {e}")
+            return {
+                "total_lessons": 0,
+                "penalized_patterns": 0,
+                "rolling_trades": 0,
+                "rolling_win_rate": 0.0,
+                "loss_streak": 0,
+            }
 
 
 # Global singleton instance

@@ -31,10 +31,24 @@ import html
 from collections import deque
 from pathlib import Path
 from datetime import datetime, timezone
-import aiohttp
+try:
+    import aiohttp
+except ImportError:
+    aiohttp = None
 from typing import Dict, Any, Optional, List, Deque
-from loguru import logger
-from dotenv import load_dotenv
+try:
+    from loguru import logger
+except ImportError:
+    from src.logger import logger
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = lambda *args, **kwargs: None
+
+try:
+    from src.self_learner import self_learner
+except ImportError:
+    self_learner = None
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
@@ -191,18 +205,16 @@ class MarketAIAssistant:
 
         # Master System Instructions
         self.system_prompt = (
-            "Sen 'Cyber Trade' professional sun'iy intellekt bozor tahlilchisisan (10 yillik tajribali treyder darajasida).\n\n"
-            "Sening vazifang — foydalanuvchi savollariga bozorning REAL JONLI MA'LUMOTLARI (SMC, Order Block, FVG, 1H Trend va XGBoost ML) asosida "
-            "aniq, xolis, do'stona va professional tahlil berish.\n\n"
-            "QAT'IY QOIDALAR:\n"
-            "1. JONLI HAQIQATGA ASOSLAN: Quyida berilgan aniq joriy narx va bot hisob-kitoblaridan foydalan. O'zingdan narx to'qima!\n"
-            "2. TREYDERONA FIKRLA: Nega narx o'syapti yoki tushyapti, likvidlik qayerda, kirish xavfsizmi yoki yo'qmi — tushuntir.\n"
-            "3. DAM OLISH KUNLARINI (SHANBA/YAKSHANBA) INOBATGA OL: Oltin va Forex birjalari yopiqligini, Kriptoda esa hajm pastligini eslat.\n"
-            "4. QULAY FORMAT: Hech qanday markdown jadval (table) tuzma! Chiroyli qisqa xulosalar bilan 3 qismda javob ber:\n"
-            "   • 1-qism: Hozirgi jonli holat va narx\n"
-            "   • 2-qism: Asosiy darajalar (Order Block, FVG, Trend va RSI)\n"
-            "   • 3-qism: Aniq amaliy xulosa (Hozir nima qilish kerak?)\n"
-            "5. O'zbek tilida ravon, samimiy va professional tilda javob ber."
+            "Sen — Cyber Trade tizimidagi tajribali, intizomli va do'stona REAL TREYDER do'stsan.\n\n"
+            "ASOSIY QOIDALAR:\n"
+            "1. ODAMDEK GAPLASH: Telegramda xuddi tajribali treyder do'st yozgandek tabiiy, samimiy va jonli o'zbek tilida yoz. "
+            "Hech qachon robotdek yoki quruq kitobiy leksiyachi bo'lib gapirma! 'Men sun'iy intellektman', '1-qism, 2-qism', 'Moliyaviy maslahat emas' deb aslo yozma.\n"
+            "2. LO'NDA VA ANIQ: Odamlar Telegramda uzun kitoblarni o'qimaydi. Javobing qisqa, aniq va lo'nda bo'lsin (odatda 2-4 ta lo'nda jumla yetarli).\n"
+            "3. SALOM VA ODDY SUHBAT: Agar foydalanuvchi shunchaki salomlashsa yoki hol so'rasa, xuddi treyder do'stdek 1 ta qisqa samimiy gap bilan javob ber "
+            "(masalan: 'Va alaykum assalom, do'stim! Bozorlarni kuzatyapman, qaysi aktivni ko'rib beray?'). Unga keraksiz bozor leksiyasini tashlama!\n"
+            "4. REAL NARX VA SMC: Agar biror aktiv (Oltin, Bitcoin va h.k.) haqida so'rasa, berilgan jonli narxga tayanib, bozor tilida qisqa tushuntir: "
+            "retest kutilyaptimi, likvidlik qayerda, hozir kirish xavflimi yoki yo'qmi.\n"
+            "5. INTIZOM: Foydalanuvchini FOMOga berilmaslikka, sabrli bo'lishga va riskni (1-2%) qat'iy saqlashga do'stona undab tur."
         )
 
         # Log system status
@@ -249,8 +261,8 @@ class MarketAIAssistant:
         payload = {
             "contents": contents,
             "generationConfig": {
-                "temperature": 0.35,
-                "maxOutputTokens": 850,
+                "temperature": 0.45,
+                "maxOutputTokens": 350,
             }
         }
 
@@ -302,8 +314,8 @@ class MarketAIAssistant:
         payload = {
             "model": model,
             "messages": messages,
-            "temperature": 0.35,
-            "max_tokens": 850,
+            "temperature": 0.45,
+            "max_tokens": 350,
         }
 
         try:
@@ -358,15 +370,8 @@ class MarketAIAssistant:
         # 2. On-demand live analysis for real-time grounding
         if signal_engine and data_fetcher:
             try:
-                fetch_sym = active_sym
-                if "BTC" in active_sym:
-                    fetch_sym = "BTC-USD"
-                elif "ETH" in active_sym:
-                    fetch_sym = "ETH-USD"
-                elif "XAU" in active_sym or "GOLD" in active_sym:
-                    fetch_sym = "GC=F"
-
-                df = await data_fetcher.get_market_data(fetch_sym, timeframe="15m")
+                # Pass active_sym directly: data_fetcher uses Binance 0ms for crypto and Spot Gold (XAUUSD=X)
+                df = await data_fetcher.get_market_data(active_sym, timeframe="15m")
                 dxy_df = await data_fetcher.get_market_data("DXY", timeframe="15m")
                 if df is not None and len(df) >= 30:
                     _, fresh_meta = await signal_engine.analyze_and_generate_signal(
@@ -393,29 +398,40 @@ class MarketAIAssistant:
         day_str = datetime.now().strftime("%A")
         is_weekend = (now_utc.weekday() == 4 and now_utc.hour >= 22) or (now_utc.weekday() == 5) or (now_utc.weekday() == 6 and now_utc.hour < 22)
 
-        weekend_note = (
-            "DAM OLISH KUNI: Oltin (XAUUSD) va Forex birjalari yopiq! Kriptovalyuta (BTC/ETH) esa 24/7 ochiq, "
-            "lekin dam olish kunlari hajm pastligi sababli soxta harakatlar (fakeout) xavfi yuqori bo'ladi."
-            if is_weekend else "ISH KUNI: Jahon moliya birjalari jonli faoliyatda."
-        )
+        # Detect casual small-talk vs specific market question
+        msg_clean = user_message.lower().strip()
+        is_greeting = any(
+            msg_clean == g or msg_clean.startswith(g + " ")
+            for g in ["salom", "assalomu alaykum", "assalom", "qalesiz", "qalesan", "nima gap", "rahmat", "katta rahmat", "spasibo", "kim bu", "zo'r", "hello", "hi"]
+        ) and detected_sym is None
 
-        user_prompt = (
-            f"JONLI BOZOR HAQIQATLARI (REAL VAQTDAGI MA'LUMOTLAR):\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"• Aktiv: #{active_sym}\n"
-            f"• Aniq Joriy Narx: ${cur_price:,.2f}\n"
-            f"• Katta 1H Trend: {htf_trend}\n"
-            f"• AI Modeli: {ml_sig} ({ml_conf:.1f}% ishonch)\n"
-            f"• Bozor Rejimi: {regime}\n"
-            f"• Makro DXY Holati: {macro}\n"
-            f"• Botning Qarori: {gate_reason}\n"
-            f"• Kalendar: Bugun {day_str}. {weekend_note}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"Foydalanuvchi Savoli: \"{user_message}\"\n\n"
-            f"Yuqoridagi real narx va ko'rsatkichlarga tayanib, foydalanuvchining savoliga "
-            f"to'g'ridan-to'g'ri, samimiy va professional tahlil bilan javob ber. "
-            f"Hozirgi ${cur_price:,.2f} narx va darajalardan kelib chiqib aniq amaliy tavsiya ber."
-        )
+        if is_greeting:
+            user_prompt = (
+                f"Foydalanuvchi oddiy salomlashmoqda yoki hol so'ramoqda: \"{user_message}\"\n\n"
+                f"Sen — Cyber Trade tizimidagi tajribali, intizomli treyder do'stsan. "
+                f"Foydalanuvchiga xuddi telegramda do'stingga yozgandek 1 ta juda samimiy, do'stona va tabiiy gap bilan javob ber "
+                f"(masalan: 'Va alaykum assalom, do'stim! Kayfiyatlar yaxshimi? Bozorlarni kuzatyapman, qaysi aktivni ko'rib beray?'). "
+                f"Hech qanday bozor leksiyasi, jadvallar yoki uzun tahlil yozma!"
+            )
+        else:
+            learning_ctx_str = ""
+            if self_learner:
+                learning_ctx_str = f"• AI O'z-o'zini O'rganish: {self_learner.get_ai_grounding_context()}\n"
+
+            user_prompt = (
+                f"REAL BOZOR JONLI MA'LUMOTLARI (#{active_sym}):\n"
+                f"• Aniq Joriy Narx: ${cur_price:,.2f}\n"
+                f"• 1H Katta Trend: {htf_trend} | AI Ishonchi: {ml_sig} ({ml_conf:.0f}%)\n"
+                f"• Bozor Rejimi: {regime} | Bot Qarori: {gate_reason}\n"
+                f"{learning_ctx_str}\n"
+                f"Foydalanuvchi xabari: \"{user_message}\"\n\n"
+                f"QAT'IY KO'RSATMA:\n"
+                f"Odamlar Telegramda qanday yozishsa, shunday xuddi tajribali treyder do'stdek "
+                f"2-4 ta lo'nda, samimiy va jonli gap bilan javob ber. "
+                f"Hech qachon robotdek gapirma! '1-qism, 2-qism', bo'limlar yoki uzun leksiya qilma! "
+                f"Hozirgi ${cur_price:,.2f} narx va vaziyatni qisqa tushuntirib, amaliy maslahat ber. "
+                f"Agar foydalanuvchi o'rganish, natijalar yoki xatolar haqida so'rasa, yuqoridagi o'z-o'zini o'rganish xulosalariga tayanib do'stona tushuntir."
+            )
 
         history = self.memory.get_history(cid)
         reply_raw: Optional[str] = None
@@ -505,22 +521,51 @@ class MarketAIAssistant:
         msg: str,
         ctx: Optional[Dict[str, Any]],
     ) -> str:
-        """Dynamic rule-based analytical response fallback."""
-        symbol = ctx.get("symbol", "BTCUSDT") if ctx else "BTCUSDT"
-        price = ctx.get("current_price", 0.0) if ctx else 0.0
-        regime = ctx.get("regime", "Barqaror") if ctx else "Barqaror"
-        signal = ctx.get("ml_signal", "HOLD") if ctx else "HOLD"
-        conf = ctx.get("ml_confidence", 0.0) * 100 if ctx else 0.0
-        reason = ctx.get("gate_reason", "Bozor tasdiqni kutmoqda") if ctx else "Bozor tasdiqni kutmoqda"
-        trend = ctx.get("htf_trend", "NEUTRAL") if ctx else "NEUTRAL"
+        """Human-like conversational trader fallback response (friendly, direct, no rigid templates)."""
+        m_low = msg.lower().strip()
+        # 1. Greetings & Small-talk
+        if any(m_low == g or m_low.startswith(g + " ") for g in ["salom", "assalomu alaykum", "assalom", "qalesiz", "qalesan", "nima gap", "hello", "hi"]):
+            return "Va alaykum assalom, do'stim! Kayfiyatlar yaxshimi? Bozorlarni kuzatib turibman, qaysi aktivni ko'rib beray?"
 
-        return (
-            f"📊 <b>#{symbol} BOZOR TAHLILI:</b>\n\n"
-            f"• <b>Joriy Narx:</b> <code>${price:,.2f}</code>\n"
-            f"• <b>1H Trend:</b> <code>{trend}</code>\n"
-            f"• <b>AI Xulosasi:</b> <b>{signal}</b> ({conf:.1f}% ishonch)\n"
-            f"• <b>Bozor Rejimi:</b> <i>{regime}</i>\n"
-            f"• <b>Bot Qarori:</b> {reason}\n\n"
-            f"💡 <b>Tavsiya:</b> Hozirgi bozor sharoitida narx asosiy zonani tasdiqlamaguncha "
-            f"shoshilmaslik va keyingi 15m sham yopilishini kutish maqsadga muvofiq."
-        )
+        if any(m_low == r or m_low.startswith(r) for r in ["rahmat", "katta rahmat", "spasibo", "tashakkur"]):
+            return "Arzimaydi, birodar! Har doim xizmatingizdaman. Savdoda doim intizom va xavfsizlik birinchi o'rinda bo'lsin!"
+
+        # 1.5. Self-Learning, Performance, & Trade Reflection
+        if any(w in m_low for w in ["o'rgan", "organ", "kuchayt", "xato", "tajriba", "dars", "qanday o'rgan", "qanaqa o'rgan"]):
+            if self_learner:
+                stats = self_learner.db.get_learning_stats()
+                adaptive = self_learner.get_adaptive_capital_protection()
+                return (
+                    f"Men har bir yopilgan savdo (SL yoki TP) natijasini avtomatik tahlil qilib boraman, do'stim! "
+                    f"Hozirgacha bazada {stats['total_lessons']} ta dars to'plandi, oxirgi savdolar Win-Rate ko'rsatkichi {stats['rolling_win_rate']:.0f}%. "
+                    f"Agar biror qolipda xato bo'lsa, o'sha qolipga jarima beriladi va filtrlash kuchaytiriladi ({adaptive['status_badge']}). "
+                    f"Batafsil xulosalarni ko'rish uchun /learn buyrug'ini bosing!"
+                )
+
+        # 2. Market conversation
+        symbol = ctx.get("symbol", "BTCUSDT") if ctx else "BTCUSDT"
+        price = float(ctx.get("current_price", 0.0)) if ctx else 0.0
+        signal = ctx.get("ml_signal", "HOLD") if ctx else "HOLD"
+        trend = ctx.get("htf_trend", "NEUTRAL") if ctx else "NEUTRAL"
+        trend_uz = "o'suvchi (Bullish)" if trend == "BULLISH" else ("pasayuvchi (Bearish)" if trend == "BEARISH" else "noaniq (Ranging)")
+
+        price_str = f"${price:,.2f}" if price > 0 else "joriy narx"
+
+        if signal == "BUY":
+            return (
+                f"Hozir #{symbol} da narx {price_str} atrofida. 1H trend {trend_uz}. "
+                f"Bozorda o'sishga qiziqish bor, lekin xavfsiz retestni kutish kerak. "
+                f"Kanalda tasdiqlangan A+ signal chiqishini kuzatib turing!"
+            )
+        elif signal == "SELL":
+            return (
+                f"Hozir #{symbol} da narx {price_str} atrofida. 1H trend {trend_uz}. "
+                f"Sotuvchilar bosimi sezilyapti, lekin pastki likvidlik olinganini tekshirish lozim. "
+                f"Shoshilmasdan tasdiqlangan kirishni kutgan ma'qul."
+            )
+        else:
+            return (
+                f"Hozir #{symbol} {price_str} atrofida siqilmoqda. 1H trend {trend_uz}. "
+                f"Bozor hali aniq yo'nalish bermadi, shuning uchun shoshilmasdan kutyapmiz. "
+                f"Yaxshi A+ setup paydo bo'lishi bilan zudlik bilan xabar beraman!"
+            )

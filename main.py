@@ -14,7 +14,10 @@ import signal
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from loguru import logger
+try:
+    from loguru import logger
+except ImportError:
+    from src.logger import logger
 
 # Add project root to sys.path
 BASE_DIR = Path(__file__).resolve().parent
@@ -116,10 +119,17 @@ class CyberTradeOrchestrator:
                         continue
 
                     current_price = float(df["close"][-1])
+                    high_price = float(df["high"][-1])
+                    low_price = float(df["low"][-1])
                     latest_candle_time = str(df["time"][-1])
 
-                    # 3. Check active signals trailing triggers (TP1 / TP2 / SL)
-                    trailing_alerts = self.signal_tracker.update_price(symbol, current_price)
+                    # 3. Check active signals trailing triggers (Intra-candle High/Low wick extremes & Limit orders)
+                    trailing_alerts = self.signal_tracker.update_price(
+                        symbol=symbol,
+                        current_price=current_price,
+                        high_price=high_price,
+                        low_price=low_price,
+                    )
                     for alert in trailing_alerts:
                         logger.info(f"Trailing Alert for {symbol}: {alert['type']}")
                         await self.telegram_bot.broadcast_alert(alert["message"])

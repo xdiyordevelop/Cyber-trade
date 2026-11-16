@@ -30,6 +30,13 @@ class SMCSignal:
     take_profit: float
     confidence: float
     reason: str
+    order_type: str = "MARKET"   # "MARKET" or "BUY LIMIT" / "SELL LIMIT"
+    ob_top: Optional[float] = None
+    ob_bottom: Optional[float] = None
+    fvg_top: Optional[float] = None
+    fvg_bottom: Optional[float] = None
+    target_liquidity: Optional[float] = None
+    invalidation_level: Optional[float] = None
     
     @property
     def risk_reward(self) -> float:
@@ -752,26 +759,26 @@ class SMCAnalyzer:
         has_bullish_ob = 1 in recent_obs
         has_bearish_ob = -1 in recent_obs
 
-        # Get valid FVG/OB zone for entry
+        # Get valid FVG/OB zone for entry with exact boundaries
         def get_valid_bullish_zone():
             # Find most recent bullish FVG or OB
             for i in range(len(recent_fvg_bull) - 1, -1, -1):
-                if recent_fvg_bull[i] and fvg_bottoms[i] is not None:
-                    return fvg_bottoms[i], "FVG"
+                if recent_fvg_bull[i] and fvg_bottoms[i] is not None and fvg_tops[i] is not None:
+                    return fvg_bottoms[i], fvg_tops[i], "FVG", None, None, fvg_tops[i], fvg_bottoms[i]
             for i in range(len(recent_obs) - 1, -1, -1):
-                if recent_obs[i] == 1 and ob_bottoms[i] is not None:
-                    return ob_bottoms[i], "OB"
-            return None, None
+                if recent_obs[i] == 1 and ob_bottoms[i] is not None and ob_tops[i] is not None:
+                    return ob_bottoms[i], ob_tops[i], "OB", ob_tops[i], ob_bottoms[i], None, None
+            return None, None, None, None, None, None, None
 
         def get_valid_bearish_zone():
             # Find most recent bearish FVG or OB
             for i in range(len(recent_fvg_bear) - 1, -1, -1):
-                if recent_fvg_bear[i] and fvg_tops[i] is not None:
-                    return fvg_tops[i], "FVG"
+                if recent_fvg_bear[i] and fvg_tops[i] is not None and fvg_bottoms[i] is not None:
+                    return fvg_bottoms[i], fvg_tops[i], "FVG", None, None, fvg_tops[i], fvg_bottoms[i]
             for i in range(len(recent_obs) - 1, -1, -1):
-                if recent_obs[i] == -1 and ob_tops[i] is not None:
-                    return ob_tops[i], "OB"
-            return None, None
+                if recent_obs[i] == -1 and ob_tops[i] is not None and ob_bottoms[i] is not None:
+                    return ob_bottoms[i], ob_tops[i], "OB", ob_tops[i], ob_bottoms[i], None, None
+            return None, None, None, None, None, None, None
 
         # Get ATR for dynamic SL/TP calculation
         # Universal fallback based on asset price percentage (0.5%)
@@ -782,12 +789,8 @@ class SMCAnalyzer:
         else:
             atr = current_close * 0.005
 
-        # SL: 1.5-2 ATR distance (protects against noise)
-        min_sl_distance = 1.5 * atr
-
-        # === FIXED RR RATIO 1:1.5 ===
-        # Based on backtest analysis: RR 1:2 only hits TP 14% of the time
-        # RR 1:1.5 is more realistic for higher hit rate
+        # SL minimum distance to avoid market noise
+        min_sl_distance = 1.0 * atr
         min_rr_ratio = 1.5
 
         # BULLISH SIGNAL CONDITIONS
@@ -795,120 +798,178 @@ class SMCAnalyzer:
         if ((market_structure == 1 or has_bullish_break) and
             (has_bullish_fvg or has_bullish_ob)):
 
-            entry_zone, zone_type = get_valid_bullish_zone()
-            # FIX: ALWAYS use current_close as entry (no stale prices)
-            # FVG/OB zone is just for confirmation, not entry price
-            entry = current_close
+            z_bot, z_top, zone_type, ob_t, ob_b, fvg_t, fvg_b = get_valid_bullish_zone()
+            
+            if z_bot is not None and z_top is not None:
+                # Anti-FOMO Execution Logic:
+                # If current price is currently inside or touching the zone -> Market Execution
+                # If current price has already escaped higher -> Buy Limit at zone top / retest level
+                if z_bot - (0.1 * atr) <= current_close <= z_top + (0.35 * atr):
+                    entry = current_close
+                    order_type = "MARKET"
+                elif current_close > z_top + (0.35 * atr):
+                    entry = round(z_top, 4)
+                    order_type = "BUY LIMIT"
+                else:
+                    # Below zone: wait for structure confirmation
+                    entry = current_close
+                    order_type = "MARKET"
 
-            # SL below swing low or ATR-based (use the FURTHER one to prevent whipsaw)
-            swing_sl = last_swing_low if last_swing_low and last_swing_low < entry else None
-            atr_sl = entry - min_sl_distance
+                # SL below zone bottom and swing low with ATR buffer
+                swing_sl = last_swing_low if last_swing_low and last_swing_low < entry else None
+                base_invalidation = min(z_bot, swing_sl) if swing_sl else z_bot
+                sl = base_invalidation - (0.25 * atr)
 
-            if swing_sl:
-                # Use the further SL (more protection)
-                sl = min(swing_sl, atr_sl)
-            else:
-                sl = atr_sl
+                # Guardrail: Ensure risk distance is realistic
+                risk = entry - sl
+                if risk < min_sl_distance:
+                    sl = entry - min_sl_distance
+                    risk = min_sl_distance
+                elif risk > (3.5 * atr):
+                    # Cap extreme SL to max 3.0x ATR to maintain healthy R:R
+                    sl = entry - (3.0 * atr)
+                    risk = 3.0 * atr
 
-            # Ensure SL is at least min_sl_distance away
-            if entry - sl < min_sl_distance:
-                sl = entry - min_sl_distance
+                # Liquidity-Grounded Take Profit: Target opposing Swing High or BSL
+                target_tp = None
+                if "bsl_level" in df.columns:
+                    bsl_vals = [float(v) for v in df.tail(60)["bsl_level"].drop_nulls().to_list() if float(v) > entry + (risk * 1.4)]
+                    if bsl_vals:
+                        target_tp = bsl_vals[-1]
 
-            # FIXED TP at RR 1:1.5
-            risk = entry - sl
-            tp = entry + (risk * min_rr_ratio)
+                if target_tp is None:
+                    # Look for prominent swing highs in recent history
+                    highs_pool = [float(h) for h in df.tail(80)["high"].to_list() if float(h) > entry + (risk * 1.5)]
+                    if highs_pool:
+                        target_tp = min(highs_pool)  # Nearest significant liquidity pool
 
-            # VALIDATE RR before creating signal (tolerance for floating point)
-            actual_rr = (tp - entry) / risk if risk > 0 else 0
-            if actual_rr < min_rr_ratio - 0.01:
-                logger.debug(f"Skipping BUY signal: RR {actual_rr:.2f} < {min_rr_ratio}")
-                signal = None
-            else:
-                # Calibrated confidence calculation
-                conf = self.calculate_confidence(
-                    signal_type="BUY",
-                    market_structure=market_structure,
-                    has_break=has_bullish_break,
-                    has_fvg=has_bullish_fvg,
-                    has_ob=has_bullish_ob,
-                    df=df,
-                )
+                tp = target_tp if target_tp else (entry + (risk * 2.2))
 
-                reason_parts = []
-                if has_bullish_break:
-                    reason_parts.append("BOS/CHoCH")
-                if zone_type == "FVG":
-                    reason_parts.append("FVG")
-                if zone_type == "OB":
-                    reason_parts.append("OB")
+                # VALIDATE REAL RR before emitting signal
+                actual_rr = (tp - entry) / risk if risk > 0 else 0
+                if actual_rr < min_rr_ratio - 0.05:
+                    logger.debug(f"Skipping BUY signal: Real RR to opposing resistance {actual_rr:.2f} < {min_rr_ratio}")
+                    signal = None
+                else:
+                    conf = self.calculate_confidence(
+                        signal_type="BUY",
+                        market_structure=market_structure,
+                        has_break=has_bullish_break,
+                        has_fvg=has_bullish_fvg,
+                        has_ob=has_bullish_ob,
+                        df=df,
+                    )
 
-                signal = SMCSignal(
-                    signal_type="BUY",
-                    entry_price=entry,
-                    stop_loss=sl,
-                    take_profit=tp,
-                    confidence=conf,
-                    reason="Bullish " + " + ".join(reason_parts),
-                )
+                    reason_parts = []
+                    if has_bullish_break:
+                        reason_parts.append("BOS/CHoCH")
+                    if zone_type == "FVG":
+                        reason_parts.append("FVG Retest")
+                    if zone_type == "OB":
+                        reason_parts.append("OB Retest")
+
+                    signal = SMCSignal(
+                        signal_type="BUY",
+                        entry_price=round(entry, 4),
+                        stop_loss=round(sl, 4),
+                        take_profit=round(tp, 4),
+                        confidence=conf,
+                        reason="Bullish " + " + ".join(reason_parts),
+                        order_type=order_type,
+                        ob_top=ob_t,
+                        ob_bottom=ob_b,
+                        fvg_top=fvg_t,
+                        fvg_bottom=fvg_b,
+                        target_liquidity=round(tp, 4),
+                        invalidation_level=round(base_invalidation, 4),
+                    )
 
         # BEARISH SIGNAL CONDITIONS
         elif ((market_structure == -1 or has_bearish_break) and
               (has_bearish_fvg or has_bearish_ob)):
 
-            entry_zone, zone_type = get_valid_bearish_zone()
-            # FIX: ALWAYS use current_close as entry (no stale prices)
-            entry = current_close
+            z_bot, z_top, zone_type, ob_t, ob_b, fvg_t, fvg_b = get_valid_bearish_zone()
 
-            # SL above swing high or ATR-based (use the FURTHER one to prevent whipsaw)
-            swing_sl = last_swing_high if last_swing_high and last_swing_high > entry else None
-            atr_sl = entry + min_sl_distance
+            if z_bot is not None and z_top is not None:
+                # Anti-FOMO Execution Logic:
+                # If current price is inside or touching the zone -> Market Execution
+                # If current price has already dumped lower -> Sell Limit at zone bottom / retest level
+                if z_bot - (0.35 * atr) <= current_close <= z_top + (0.1 * atr):
+                    entry = current_close
+                    order_type = "MARKET"
+                elif current_close < z_bot - (0.35 * atr):
+                    entry = round(z_bot, 4)
+                    order_type = "SELL LIMIT"
+                else:
+                    entry = current_close
+                    order_type = "MARKET"
 
-            if swing_sl:
-                # Use the further SL (more protection)
-                sl = max(swing_sl, atr_sl)
-            else:
-                sl = atr_sl
+                # SL above zone top and swing high with ATR buffer
+                swing_sl = last_swing_high if last_swing_high and last_swing_high > entry else None
+                base_invalidation = max(z_top, swing_sl) if swing_sl else z_top
+                sl = base_invalidation + (0.25 * atr)
 
-            # Ensure SL is at least min_sl_distance away
-            if sl - entry < min_sl_distance:
-                sl = entry + min_sl_distance
+                # Guardrail: Ensure risk distance is realistic
+                risk = sl - entry
+                if risk < min_sl_distance:
+                    sl = entry + min_sl_distance
+                    risk = min_sl_distance
+                elif risk > (3.5 * atr):
+                    sl = entry + (3.0 * atr)
+                    risk = 3.0 * atr
 
-            # FIXED TP at RR 1:1.5
-            risk = sl - entry
-            tp = entry - (risk * min_rr_ratio)
+                # Liquidity-Grounded Take Profit: Target opposing Swing Low or SSL
+                target_tp = None
+                if "ssl_level" in df.columns:
+                    ssl_vals = [float(v) for v in df.tail(60)["ssl_level"].drop_nulls().to_list() if float(v) < entry - (risk * 1.4)]
+                    if ssl_vals:
+                        target_tp = ssl_vals[-1]
 
-            # VALIDATE RR before creating signal (tolerance for floating point)
-            actual_rr = (entry - tp) / risk if risk > 0 else 0
-            if actual_rr < min_rr_ratio - 0.01:
-                logger.debug(f"Skipping SELL signal: RR {actual_rr:.2f} < {min_rr_ratio}")
-                signal = None
-            else:
-                # Calibrated confidence calculation
-                conf = self.calculate_confidence(
-                    signal_type="SELL",
-                    market_structure=market_structure,
-                    has_break=has_bearish_break,
-                    has_fvg=has_bearish_fvg,
-                    has_ob=has_bearish_ob,
-                    df=df,
-                )
+                if target_tp is None:
+                    lows_pool = [float(l) for l in df.tail(80)["low"].to_list() if float(l) < entry - (risk * 1.5)]
+                    if lows_pool:
+                        target_tp = max(lows_pool)  # Nearest significant liquidity support
 
-                reason_parts = []
-                if has_bearish_break:
-                    reason_parts.append("BOS/CHoCH")
-                if zone_type == "FVG":
-                    reason_parts.append("FVG")
-                if zone_type == "OB":
-                    reason_parts.append("OB")
+                tp = target_tp if target_tp else (entry - (risk * 2.2))
 
-                signal = SMCSignal(
-                    signal_type="SELL",
-                    entry_price=entry,
-                    stop_loss=sl,
-                    take_profit=tp,
-                    confidence=min(conf, 0.85),
-                    reason="Bearish " + " + ".join(reason_parts),
-                )
+                # VALIDATE REAL RR before emitting signal
+                actual_rr = (entry - tp) / risk if risk > 0 else 0
+                if actual_rr < min_rr_ratio - 0.05:
+                    logger.debug(f"Skipping SELL signal: Real RR to opposing support {actual_rr:.2f} < {min_rr_ratio}")
+                    signal = None
+                else:
+                    conf = self.calculate_confidence(
+                        signal_type="SELL",
+                        market_structure=market_structure,
+                        has_break=has_bearish_break,
+                        has_fvg=has_bearish_fvg,
+                        has_ob=has_bearish_ob,
+                        df=df,
+                    )
+
+                    reason_parts = []
+                    if has_bearish_break:
+                        reason_parts.append("BOS/CHoCH")
+                    if zone_type == "FVG":
+                        reason_parts.append("FVG Retest")
+                    if zone_type == "OB":
+                        reason_parts.append("OB Retest")
+
+                    signal = SMCSignal(
+                        signal_type="SELL",
+                        entry_price=round(entry, 4),
+                        stop_loss=round(sl, 4),
+                        take_profit=round(tp, 4),
+                        confidence=min(conf, 0.85),
+                        reason="Bearish " + " + ".join(reason_parts),
+                        order_type=order_type,
+                        ob_top=ob_t,
+                        ob_bottom=ob_b,
+                        fvg_top=fvg_t,
+                        fvg_bottom=fvg_b,
+                        target_liquidity=round(tp, 4),
+                        invalidation_level=round(base_invalidation, 4),
+                    )
 
         if signal:
             logger.info(f"SMC Signal: {signal.signal_type} @ {signal.entry_price:.5f}, "
