@@ -196,15 +196,27 @@ class UniversalDataFetcher:
             }
             yf_interval = tf_map.get(interval, "15m")
 
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval={yf_interval}&range={range_period}"
+        endpoints = [
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval={yf_interval}&range={range_period}",
+            f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?interval={yf_interval}&range={range_period}",
+        ]
 
-        try:
-            async with aiohttp.ClientSession(timeout=self.timeout, headers=self.headers) as session:
-                async with session.get(url) as resp:
-                    if resp.status != 200:
-                        logger.warning(f"Yahoo API returned status {resp.status} for {symbol}")
-                        return None
-                    data = await resp.json()
+        data = None
+        for url in endpoints:
+            try:
+                async with aiohttp.ClientSession(timeout=self.timeout, headers=self.headers) as session:
+                    async with session.get(url) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            break
+                        else:
+                            logger.debug(f"Yahoo API {url} status {resp.status} for {symbol}")
+            except Exception as e:
+                logger.debug(f"Yahoo endpoint {url} attempt error: {e}")
+                continue
+
+        if not data:
+            return None
 
             results = data.get("chart", {}).get("result")
             if not results:
@@ -290,23 +302,15 @@ class UniversalDataFetcher:
         # ---------------------------------------------------------------------
         # 2. Resilient Offline/Container Fallbacks (Only when MT5 is not attached)
         # ---------------------------------------------------------------------
-        # Gold Fallback (Real Gold Spot / COMEX Futures GC=F - exact match with MT5)
+        # Pure Real Gold (COMEX GC=F / Spot Gold XAUUSD)
         if "XAU" in sym or "GOLD" in sym:
-            # 1. Primary: Real COMEX Gold Futures (GC=F) - exact spot gold price matching broker MT5
+            # Single exact real Gold source: COMEX Gold Futures (GC=F) - matches MT5 spot price
             df_gold = await self.fetch_yahoo_direct("GC=F", interval=timeframe, range_period="30d")
             if df_gold is not None and len(df_gold) >= 30:
                 return df_gold
 
-            # 2. Secondary: Spot Gold XAUUSD=X
-            df_xau = await self.fetch_yahoo_direct("XAUUSD=X", interval=timeframe, range_period="30d")
-            if df_xau is not None and len(df_xau) >= 30:
-                return df_xau
-
-            # 3. Tertiary: Binance Vision PAXG/USDT
-            df_paxg = await self.fetch_binance_direct("PAXGUSDT", interval=timeframe, limit=bars)
-            if df_paxg is not None and len(df_paxg) >= 30:
-                return df_paxg
-            return None
+            # Secondary real spot gold ticker if GC=F is unavailable
+            return await self.fetch_yahoo_direct("XAUUSD=X", interval=timeframe, range_period="30d")
 
         # Dollar Index (DXY)
         if "DXY" in sym or "USDX" in sym:
