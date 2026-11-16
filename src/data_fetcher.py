@@ -196,27 +196,28 @@ class UniversalDataFetcher:
             }
             yf_interval = tf_map.get(interval, "15m")
 
-        endpoints = [
-            f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval={yf_interval}&range={range_period}",
-            f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?interval={yf_interval}&range={range_period}",
-        ]
+        try:
+            endpoints = [
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval={yf_interval}&range={range_period}",
+                f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?interval={yf_interval}&range={range_period}",
+            ]
 
-        data = None
-        for url in endpoints:
-            try:
-                async with aiohttp.ClientSession(timeout=self.timeout, headers=self.headers) as session:
-                    async with session.get(url) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            break
-                        else:
-                            logger.debug(f"Yahoo API {url} status {resp.status} for {symbol}")
-            except Exception as e:
-                logger.debug(f"Yahoo endpoint {url} attempt error: {e}")
-                continue
+            data = None
+            for url in endpoints:
+                try:
+                    async with aiohttp.ClientSession(timeout=self.timeout, headers=self.headers) as session:
+                        async with session.get(url) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                break
+                            else:
+                                logger.debug(f"Yahoo API {url} status {resp.status} for {symbol}")
+                except Exception as e:
+                    logger.debug(f"Yahoo endpoint {url} attempt error: {e}")
+                    continue
 
-        if not data:
-            return None
+            if not data:
+                return None
 
             results = data.get("chart", {}).get("result")
             if not results:
