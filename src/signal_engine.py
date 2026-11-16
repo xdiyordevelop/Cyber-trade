@@ -248,8 +248,8 @@ class SignalEngine:
             "total_bars": len(df),
         }
 
-        # Crypto must be fresh within 35 minutes (ensures real-time precision while allowing 15m candle completion)
-        if is_crypto and age_minutes > 35:
+        # Crypto must be fresh within 60 minutes (ensures real-time precision while allowing 15m candle completion)
+        if is_crypto and age_minutes > 60:
             return False, f"Kriptovalyuta narxi eskirgan (oxirgi sham {int(age_minutes)} daqiqa oldin)", meta
 
         # Forex/Gold on weekends: allowed for analysis, but marked
@@ -257,8 +257,8 @@ class SignalEngine:
             meta["weekend_closed"] = True
             return True, "Bozor dam olish kunida yopiq (Juma yopilish narxlari)", meta
 
-        # Forex/Gold on weekdays must be fresh within 45 minutes
-        if not is_crypto and not is_weekend and age_minutes > 45:
+        # Forex/Gold on weekdays must be fresh within 90 minutes
+        if not is_crypto and not is_weekend and age_minutes > 90:
             return False, f"Bozor narxi eskirgan (oxirgi yangilanish {int(age_minutes)} daqiqa oldin)", meta
 
         return True, "Ma'lumotlar sifati a'lo va yangi", meta
@@ -417,22 +417,15 @@ class SignalEngine:
         }
 
         # ---------------------------------------------------------------------
-        # Gate 0: Data Quality & Freshness Sentinel
+        # Gate 0: Data Quality & Freshness Sentinel (Evaluated, indicators computed for /analyze)
         # ---------------------------------------------------------------------
         is_fresh, fresh_msg, quality_meta = self.check_data_quality(symbol, df)
         audit["quality_meta"] = quality_meta
         if not is_fresh:
             audit["gates_failed"].append(f"Ma'lumot sifati: {fresh_msg}")
             audit["summary_reason"] = f"Ma'lumotlar sifati talabga javob bermaydi ({fresh_msg})"
-            self.latest_diagnostics[symbol] = audit
-            return None, {
-                "symbol": symbol,
-                "current_price": float(df["close"][-1]) if df is not None and len(df) > 0 else 0.0,
-                "market_status": "BLOCKED_BY_DATA_QUALITY",
-                "gate_reason": fresh_msg,
-                "audit": audit,
-            }
-        audit["gates_passed"].append("Ma'lumot sifati: Yangi va toza OHLCV shamlar")
+        else:
+            audit["gates_passed"].append("Ma'lumot sifati: Yangi va toza OHLCV shamlar")
 
         # ---------------------------------------------------------------------
         # Pre-Check Gate 1 & Gate 2 (Evaluated, but indicators still computed for /analyze)
@@ -518,6 +511,15 @@ class SignalEngine:
             "quality_meta": quality_meta,
             "audit": audit,
         }
+
+        # ---------------------------------------------------------------------
+        # Gate 0 Enforcement: Stale data blocks automated signal broadcasting
+        # ---------------------------------------------------------------------
+        if not is_fresh:
+            self.latest_diagnostics[symbol] = audit
+            meta["market_status"] = "BLOCKED_BY_DATA_QUALITY"
+            meta["gate_reason"] = fresh_msg
+            return None, meta
 
         # ---------------------------------------------------------------------
         # Gate 1 Validation: Session & Schedule Filter
