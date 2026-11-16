@@ -248,8 +248,8 @@ class SignalEngine:
             "total_bars": len(df),
         }
 
-        # Crypto must be fresh within 15 minutes (ensures real-time Binance/Bybit precision)
-        if is_crypto and age_minutes > 15:
+        # Crypto must be fresh within 35 minutes (ensures real-time precision while allowing 15m candle completion)
+        if is_crypto and age_minutes > 35:
             return False, f"Kriptovalyuta narxi eskirgan (oxirgi sham {int(age_minutes)} daqiqa oldin)", meta
 
         # Forex/Gold on weekends: allowed for analysis, but marked
@@ -257,8 +257,8 @@ class SignalEngine:
             meta["weekend_closed"] = True
             return True, "Bozor dam olish kunida yopiq (Juma yopilish narxlari)", meta
 
-        # Forex/Gold on weekdays must be fresh within 20 minutes
-        if not is_crypto and not is_weekend and age_minutes > 20:
+        # Forex/Gold on weekdays must be fresh within 45 minutes
+        if not is_crypto and not is_weekend and age_minutes > 45:
             return False, f"Bozor narxi eskirgan (oxirgi yangilanish {int(age_minutes)} daqiqa oldin)", meta
 
         return True, "Ma'lumotlar sifati a'lo va yangi", meta
@@ -435,44 +435,15 @@ class SignalEngine:
         audit["gates_passed"].append("Ma'lumot sifati: Yangi va toza OHLCV shamlar")
 
         # ---------------------------------------------------------------------
-        # Gate 1: Session & Schedule Filter
+        # Pre-Check Gate 1 & Gate 2 (Evaluated, but indicators still computed for /analyze)
         # ---------------------------------------------------------------------
         is_allowed, session_reason = self.session_filter.is_signal_allowed(symbol)
-        if not is_allowed:
-            audit["gates_failed"].append(f"Bozor jadvali: {session_reason}")
-            audit["summary_reason"] = session_reason
-            self.latest_diagnostics[symbol] = audit
-            return None, {
-                "symbol": symbol,
-                "current_price": float(df["close"][-1]),
-                "market_status": "BLOCKED_BY_SCHEDULE",
-                "gate_reason": session_reason,
-                "audit": audit,
-            }
-        audit["gates_passed"].append(f"Sessiya: Faol savdo vaqti ({session_reason})")
-
-        # ---------------------------------------------------------------------
-        # Gate 2: High-Impact Economic News Sentinel
-        # ---------------------------------------------------------------------
         news_status = await self.news_sentinel.check_news_safety(currency="USD")
         audit["news_status"] = news_status.status
         audit["news_warning"] = news_status.warning_text
 
-        if not news_status.is_safe and news_status.status == "DANGER":
-            audit["gates_failed"].append(f"Yangiliklar xavfi: {news_status.warning_text}")
-            audit["summary_reason"] = "Yaqin orada yuqori ta'sirli yangilik (CPI/NFP/FOMC) kutilmoqda"
-            self.latest_diagnostics[symbol] = audit
-            return None, {
-                "symbol": symbol,
-                "current_price": float(df["close"][-1]),
-                "market_status": "BLOCKED_BY_NEWS",
-                "gate_reason": news_status.warning_text,
-                "audit": audit,
-            }
-        audit["gates_passed"].append("Yangiliklar: Bozor iqtisodiy jihatdan xavfsiz")
-
         # ---------------------------------------------------------------------
-        # Gate 3: Multi-Timeframe (MTF) Engine (H4, H1, M15)
+        # Step 3: Multi-Timeframe (MTF) Engine (H4, H1, M15)
         # ---------------------------------------------------------------------
         mtf_data = self.analyze_mtf(df)
         audit["mtf"] = mtf_data
@@ -547,6 +518,30 @@ class SignalEngine:
             "quality_meta": quality_meta,
             "audit": audit,
         }
+
+        # ---------------------------------------------------------------------
+        # Gate 1 Validation: Session & Schedule Filter
+        # ---------------------------------------------------------------------
+        if not is_allowed:
+            audit["gates_failed"].append(f"Bozor jadvali: {session_reason}")
+            audit["summary_reason"] = session_reason
+            self.latest_diagnostics[symbol] = audit
+            meta["market_status"] = "BLOCKED_BY_SCHEDULE"
+            meta["gate_reason"] = session_reason
+            return None, meta
+        audit["gates_passed"].append(f"Sessiya: Faol savdo vaqti ({session_reason})")
+
+        # ---------------------------------------------------------------------
+        # Gate 2 Validation: High-Impact Economic News Sentinel
+        # ---------------------------------------------------------------------
+        if not news_status.is_safe and news_status.status == "DANGER":
+            audit["gates_failed"].append(f"Yangiliklar xavfi: {news_status.warning_text}")
+            audit["summary_reason"] = "Yaqin orada yuqori ta'sirli yangilik (CPI/NFP/FOMC) kutilmoqda"
+            self.latest_diagnostics[symbol] = audit
+            meta["market_status"] = "BLOCKED_BY_NEWS"
+            meta["gate_reason"] = news_status.warning_text
+            return None, meta
+        audit["gates_passed"].append("Yangiliklar: Bozor iqtisodiy jihatdan xavfsiz")
 
         # ---------------------------------------------------------------------
         # Gate 4: Direction Consensus & Conflict Gatekeeper

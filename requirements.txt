@@ -18,6 +18,7 @@ requests>=2.31.0
 
 # Free Market Data Providers
 yfinance>=0.2.40
+MetaTrader5>=5.0.45; sys_platform == 'win32'
 
 # Logging & Environment
 loguru>=0.7.2

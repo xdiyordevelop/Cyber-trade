@@ -24,6 +24,7 @@ charts/*.png
 data/signals_state.json
 data/*.db-journal
 
-# OS generated files
+# OS & IDE generated files
 .DS_Store
 Thumbs.db
+.vscode/

@@ -20,6 +20,11 @@ from loguru import logger
 
 from src.utils import resample_ohlcv
 
+try:
+    from src.mt5_fetcher import mt5_fetcher
+except ImportError:
+    mt5_fetcher = None
+
 
 class UniversalDataFetcher:
     """
@@ -58,45 +63,46 @@ class UniversalDataFetcher:
         if not clean_symbol.endswith("USDT") and not clean_symbol.endswith("BUSD"):
             clean_symbol = f"{clean_symbol}USDT"
 
-        url = f"https://api.binance.com/api/v3/klines?symbol={clean_symbol}&interval={binance_interval}&limit={limit}"
+        endpoints = [
+            f"https://data-api.binance.vision/api/v3/klines?symbol={clean_symbol}&interval={binance_interval}&limit={limit}",
+            f"https://api.binance.com/api/v3/klines?symbol={clean_symbol}&interval={binance_interval}&limit={limit}",
+        ]
 
-        try:
-            async with aiohttp.ClientSession(timeout=self.timeout, headers=self.headers) as session:
-                async with session.get(url) as resp:
-                    if resp.status != 200:
-                        logger.debug(f"Binance API returned status {resp.status} for {clean_symbol}")
-                        return None
-                    raw_candles = await resp.json()
+        fast_timeout = aiohttp.ClientTimeout(total=4.0, sock_connect=2.5)
+        for url in endpoints:
+            try:
+                async with aiohttp.ClientSession(timeout=fast_timeout, headers=self.headers) as session:
+                    async with session.get(url) as resp:
+                        if resp.status != 200:
+                            continue
+                        raw_candles = await resp.json()
 
-            if not raw_candles or not isinstance(raw_candles, list):
-                return None
+                if not raw_candles or not isinstance(raw_candles, list):
+                    continue
 
-            rows = []
-            for candle in raw_candles:
-                # Binance kline format:
-                # [0: open_time, 1: open, 2: high, 3: low, 4: close, 5: volume, 6: close_time, ...]
-                open_ts = int(candle[0]) / 1000.0
-                dt = datetime.fromtimestamp(open_ts, tz=timezone.utc).replace(tzinfo=None)
+                rows = []
+                for candle in raw_candles:
+                    open_ts = int(candle[0]) / 1000.0
+                    dt = datetime.fromtimestamp(open_ts, tz=timezone.utc).replace(tzinfo=None)
+                    rows.append({
+                        "time": dt,
+                        "open": float(candle[1]),
+                        "high": float(candle[2]),
+                        "low": float(candle[3]),
+                        "close": float(candle[4]),
+                        "volume": float(candle[5]),
+                    })
 
-                rows.append({
-                    "time": dt,
-                    "open": float(candle[1]),
-                    "high": float(candle[2]),
-                    "low": float(candle[3]),
-                    "close": float(candle[4]),
-                    "volume": float(candle[5]),
-                })
+                if rows:
+                    df = pl.DataFrame(rows).sort("time")
+                    logger.debug(f"Fetched {len(df)} candles for {clean_symbol} ({interval}) from Binance")
+                    return df
 
-            if not rows:
-                return None
+            except Exception as e:
+                logger.debug(f"Binance fetch error for {clean_symbol} on {url}: {e}")
+                continue
 
-            df = pl.DataFrame(rows).sort("time")
-            logger.debug(f"Fetched {len(df)} candles for {clean_symbol} ({interval}) from Binance")
-            return df
-
-        except Exception as e:
-            logger.debug(f"Binance fetch error for {clean_symbol}: {e}")
-            return None
+        return None
 
     # -------------------------------------------------------------------------
     # 2. Direct Bybit Public REST API (Crypto Failover)
@@ -271,22 +277,27 @@ class UniversalDataFetcher:
         sym = symbol.upper().replace("/", "").replace("-", "")
 
         # ---------------------------------------------------------------------
-        # 1. Spot Gold (XAUUSD)
+        # 1. Spot Gold (XAUUSD / GOLD)
         # ---------------------------------------------------------------------
         if "XAU" in sym or "GOLD" in sym:
-            # PRIMARY: Exact Spot Gold (matches MetaTrader 4/5, Exness, Prop Firms)
-            df_spot = await self.fetch_yahoo_direct("XAUUSD=X", interval=timeframe, range_period="30d")
-            if df_spot is not None and len(df_spot) >= 30:
-                return df_spot
+            # 1. PRIMARY: Direct Broker Connection (XM, Exness via MetaTrader 5)
+            if mt5_fetcher and mt5_fetcher.is_available:
+                try:
+                    df_mt5 = mt5_fetcher.get_market_data(sym, timeframe=timeframe, bars=bars)
+                    if df_mt5 is not None and len(df_mt5) >= 30:
+                        logger.info("Using Direct MetaTrader 5 / XM Broker Gold feed.")
+                        return df_mt5
+                except Exception as e:
+                    logger.debug(f"MT5 fetch attempt error: {e}")
 
-            # SECONDARY: PAXG/USDT on Binance (Physical 1oz Gold Token, trades 24/7 with 0ms delay)
+            # 2. SECONDARY: Binance Vision PAXG/USDT (Physical 1oz Spot Gold, 0ms latency, 24/7)
             df_paxg = await self.fetch_binance_direct("PAXGUSDT", interval=timeframe, limit=bars)
             if df_paxg is not None and len(df_paxg) >= 30:
-                logger.info("Using Binance PAXG/USDT 24/7 Spot Gold proxy.")
+                logger.info("Using Binance Vision PAXG/USDT 24/7 Spot Gold feed.")
                 return df_paxg
 
-            # TERTIARY FALLBACK: Gold Futures (GC=F) - only if spot is unavailable
-            logger.warning("Falling back to COMEX Gold Futures (GC=F). Note: Price may carry a basis premium.")
+            # 3. TERTIARY FALLBACK: COMEX Gold Futures (GC=F) on Yahoo Finance
+            logger.info("Using COMEX Gold Futures (GC=F) feed.")
             return await self.fetch_yahoo_direct("GC=F", interval=timeframe, range_period="30d")
 
         # ---------------------------------------------------------------------

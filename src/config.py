@@ -9,22 +9,39 @@ import os
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+    BASE_DIR = Path(__file__).resolve().parent.parent
+    load_dotenv(BASE_DIR / ".env")
+except ImportError:
+    BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Load .env file if available
-BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / ".env")
+# Direct zero-dependency .env reader fallback
+env_file = BASE_DIR / ".env"
+if env_file.exists():
+    try:
+        with open(env_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = v.strip().strip("'\"")
+                    if k not in os.environ:
+                        os.environ[k] = v
+    except Exception:
+        pass
 
 
 @dataclass
 class MarketConfig:
     """Market symbols and data source configurations."""
-    # Default monitored symbols
-    symbols: List[str] = field(default_factory=lambda: ["XAUUSD", "BTCUSDT", "ETHUSDT"])
+    # Default monitored symbols (Focused on Gold XAUUSD)
+    symbols: List[str] = field(default_factory=lambda: [s.strip() for s in os.getenv("MONITORED_SYMBOLS", "XAUUSD").split(",") if s.strip()])
     
     # Macro symbols for correlation analysis
     dxy_symbol: str = "DX-Y.NYB"  # US Dollar Index (Yahoo Finance)
-    gold_symbol_yf: str = "XAUUSD=X"   # Spot Gold (XAUUSD=X) on Yahoo Finance
+    gold_symbol_yf: str = "GC=F"   # COMEX Front-Month Gold Futures on Yahoo Finance
     
     # Timeframes to monitor
     primary_timeframe: str = "15m"   # Trigger timeframe
@@ -88,6 +105,17 @@ class LLMConfig:
 
 
 @dataclass
+class MT5Config:
+    """MetaTrader 5 / Broker Direct API connection settings."""
+    enabled: bool = field(default_factory=lambda: os.getenv("MT5_ENABLED", "true").lower() in ("true", "1", "yes"))
+    login: int = field(default_factory=lambda: int(os.getenv("MT5_LOGIN", "0") or "0"))
+    password: str = field(default_factory=lambda: os.getenv("MT5_PASSWORD", ""))
+    server: str = field(default_factory=lambda: os.getenv("MT5_SERVER", "XMGlobal-MT5 5"))
+    path: str = field(default_factory=lambda: os.getenv("MT5_PATH", "C:\\Program Files\\MetaTrader 5\\terminal64.exe"))
+    symbol: str = field(default_factory=lambda: os.getenv("MT5_SYMBOL", "GOLD"))
+
+
+@dataclass
 class AppConfig:
     """Master application configuration."""
     market: MarketConfig = field(default_factory=MarketConfig)
@@ -95,6 +123,7 @@ class AppConfig:
     risk: RiskSignalConfig = field(default_factory=RiskSignalConfig)
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
+    mt5: MT5Config = field(default_factory=MT5Config)
     
     # Loop intervals in seconds (e.g. 60s check or on new M15 candle)
     poll_interval_seconds: int = 60

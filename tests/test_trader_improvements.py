@@ -455,6 +455,27 @@ class TestTraderImprovements(unittest.TestCase):
         self.assertIn("AI", grounding)
         self.assertTrue(isinstance(grounding, str))
 
+    def test_mt5_fetcher_and_gold_configuration(self):
+        """Verify MetaTrader 5 / XM integration and Gold-centered configuration."""
+        from src.mt5_fetcher import mt5_fetcher
+        from src.config import get_config
+
+        # 1. MT5 Fetcher properties
+        self.assertEqual(mt5_fetcher.login, 108742123)
+        self.assertEqual(mt5_fetcher.server, "XMGlobal-MT5 5")
+        self.assertEqual(mt5_fetcher.find_gold_symbol(), "GOLD")
+        # Ensure safe non-crash behavior when MT5 terminal is not attached on host
+        res = mt5_fetcher.get_market_data("XAUUSD", "15m", 100)
+        self.assertIsNone(res)
+
+        # 2. Config verification
+        cfg = get_config()
+        self.assertIn("XAUUSD", cfg.market.symbols)
+        self.assertEqual(cfg.market.gold_symbol_yf, "GC=F")
+        self.assertTrue(cfg.mt5.enabled)
+        self.assertEqual(cfg.mt5.login, 108742123)
+        self.assertEqual(cfg.mt5.server, "XMGlobal-MT5 5")
+
 
 if __name__ == "__main__":
     unittest.main()
