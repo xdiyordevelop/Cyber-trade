@@ -32,9 +32,11 @@ except ImportError:
 from src.bot_menu import (
     MAIN_KEYBOARD,
     DEFAULT_KEYBOARD,
+    ASSET_MODES,
     is_lot_numeric_query,
     format_lot_calculation,
     format_analyze_menu,
+    format_asset_menu,
     format_mode_menu,
     format_help_guide,
     format_start_welcome,
@@ -656,6 +658,24 @@ class CyberTelegramBot:
                 await self.send_message(chat_id, confirm_msg)
             return
 
+        # 1.5. Asset Mode Change (XM Broker 0ms Feed & Signals)
+        if data.startswith("set_assets:"):
+            target_asset_mode = data.split(":")[1]
+            if target_asset_mode in ASSET_MODES:
+                db.set_setting("active_asset_mode", target_asset_mode)
+                cfg = ASSET_MODES[target_asset_mode]
+                confirm_msg = (
+                    f"✅ <b>SIGNALLAR UCHUN AKTIV TANLANDI:</b> {cfg['name']}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📊 <b>Kuzatilayotgan Tikerlar:</b> <code>{', '.join(cfg['symbols'])}</code>\n"
+                    f"⚡ <b>Ma'lumot Manbasi:</b> XM Broker MT5 (0ms to'g'ridan-to'g'ri oqim)\n"
+                    f"ℹ️ <i>{cfg['desc']}</i>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"Endi bot faqat tanlangan aktivlar bo'yicha A+ signallarni yuboradi!"
+                )
+                await self.send_message(chat_id, confirm_msg)
+            return
+
         # 2. Asset Analysis
         if data.startswith("analyze:"):
             sym = data.split(":")[1]
@@ -931,6 +951,48 @@ class CyberTelegramBot:
             return
 
         # ---------------------------------------------------------------------
+        # Menu Button 4.5: 🎯 Aktiv Tanlash or /assets / /symbols
+        # ---------------------------------------------------------------------
+        if (
+            text.startswith("/assets")
+            or text.startswith("/symbols")
+            or "aktiv tanlash" in t_low
+            or t_low == "🎯 aktiv tanlash"
+            or t_low.strip() == "aktivlar"
+            or t_low.strip() == "aktiv"
+        ):
+            parts = text.split()
+            current_asset_mode = db.get_setting("active_asset_mode", "gold")
+            if len(parts) > 1:
+                arg = parts[1].lower()
+                target_mode = None
+                if arg in ["1", "gold", "oltin", "xau", "xauusd"]:
+                    target_mode = "gold"
+                elif arg in ["2", "crypto", "kripto", "btc", "eth"]:
+                    target_mode = "crypto"
+                elif arg in ["3", "all", "hammasi", "barchasi"]:
+                    target_mode = "all"
+
+                if target_mode and target_mode in ASSET_MODES:
+                    db.set_setting("active_asset_mode", target_mode)
+                    cfg = ASSET_MODES[target_mode]
+                    confirm_msg = (
+                        f"✅ <b>SIGNALLAR UCHUN AKTIV TANLANDI:</b> {cfg['name']}\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📊 <b>Kuzatilayotgan Tikerlar:</b> <code>{', '.join(cfg['symbols'])}</code>\n"
+                        f"⚡ <b>Ma'lumot Manbasi:</b> XM Broker MT5 (0ms to'g'ridan-to'g'ri oqim)\n"
+                        f"ℹ️ <i>{cfg['desc']}</i>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"Endi bot faqat tanlangan aktivlar bo'yicha A+ signallarni yuboradi!"
+                    )
+                    await self.send_message(chat_id, confirm_msg)
+                    return
+
+            menu_text, menu_markup = format_asset_menu(current_asset_mode)
+            await self.send_message(chat_id, menu_text, reply_markup=menu_markup)
+            return
+
+        # ---------------------------------------------------------------------
         # Menu Button 5: 📰 Yangiliklar or /news
         # ---------------------------------------------------------------------
         if text.startswith("/news") or "yangiliklar" in t_low or t_low == "📰 yangiliklar" or t_low.strip() == "yangilik":
@@ -1056,6 +1118,7 @@ class CyberTelegramBot:
             {"command": "why", "description": "❓ Nega signal yo'qligi auditi"},
             {"command": "calc", "description": "🧮 Depozit va Risk bo'yicha Lot hisoblash"},
             {"command": "news", "description": "📰 Iqtisodiy taqvim va yangiliklar"},
+            {"command": "assets", "description": "🎯 Signallar uchun aktiv tanlash (Oltin, Kripto)"},
             {"command": "mode", "description": "⚙️ Savdo rejimi (Standart, Agressiv, Konservativ)"},
             {"command": "stats", "description": "📈 Win-Rate va umumiy statistika"},
             {"command": "close", "description": "🛑 Signallarni qo'lda tozalash"},

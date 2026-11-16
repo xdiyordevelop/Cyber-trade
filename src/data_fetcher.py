@@ -269,67 +269,49 @@ class UniversalDataFetcher:
         bars: int = 500,
     ) -> Optional[pl.DataFrame]:
         """
-        Smart dispatcher:
-        - Crypto (BTC, ETH, SOL): Binance -> Bybit -> Yahoo
-        - Gold (XAUUSD): Spot Gold (XAUUSD=X) -> Binance PAXGUSDT -> COMEX GC=F
-        - DXY: Yahoo DX-Y.NYB
+        Direct 0ms market data dispatcher:
+        - Primary: Direct XM Broker MT5 connection for ALL assets (Gold, Bitcoin, Ethereum, etc.)
+        - Fallback: Non-Windows container resilience
         """
         sym = symbol.upper().replace("/", "").replace("-", "")
 
         # ---------------------------------------------------------------------
-        # 1. Spot Gold (XAUUSD / GOLD)
+        # 1. EXCLUSIVE XM BROKER DIRECT FEED (0ms Latency via MetaTrader 5)
         # ---------------------------------------------------------------------
-        if "XAU" in sym or "GOLD" in sym:
-            # 1. PRIMARY: Direct Broker Connection (XM, Exness via MetaTrader 5)
-            if mt5_fetcher and mt5_fetcher.is_available:
-                try:
-                    df_mt5 = mt5_fetcher.get_market_data(sym, timeframe=timeframe, bars=bars)
-                    if df_mt5 is not None and len(df_mt5) >= 30:
-                        logger.info("Using Direct MetaTrader 5 / XM Broker Gold feed.")
-                        return df_mt5
-                except Exception as e:
-                    logger.debug(f"MT5 fetch attempt error: {e}")
+        if mt5_fetcher and mt5_fetcher.is_available:
+            try:
+                df_mt5 = mt5_fetcher.get_market_data(sym, timeframe=timeframe, bars=bars)
+                if df_mt5 is not None and len(df_mt5) >= 30:
+                    logger.debug(f"Using Direct XM Broker (MT5) 0ms feed for {sym}.")
+                    return df_mt5
+            except Exception as e:
+                logger.warning(f"XM MT5 fetch attempt error for {sym}: {e}")
 
-            # 2. SECONDARY: Binance Vision PAXG/USDT (Physical 1oz Spot Gold, 0ms latency, 24/7)
+        # ---------------------------------------------------------------------
+        # 2. Resilient Offline/Container Fallbacks (Only when MT5 is not attached)
+        # ---------------------------------------------------------------------
+        # Gold Fallback
+        if "XAU" in sym or "GOLD" in sym:
             df_paxg = await self.fetch_binance_direct("PAXGUSDT", interval=timeframe, limit=bars)
             if df_paxg is not None and len(df_paxg) >= 30:
-                logger.info("Using Binance Vision PAXG/USDT 24/7 Spot Gold feed.")
                 return df_paxg
-
-            # 3. TERTIARY FALLBACK: COMEX Gold Futures (GC=F) on Yahoo Finance
-            logger.info("Using COMEX Gold Futures (GC=F) feed.")
             return await self.fetch_yahoo_direct("GC=F", interval=timeframe, range_period="30d")
 
-        # ---------------------------------------------------------------------
-        # 2. Dollar Index (DXY)
-        # ---------------------------------------------------------------------
+        # Dollar Index (DXY)
         if "DXY" in sym or "USDX" in sym:
             return await self.fetch_yahoo_direct("DX-Y.NYB", interval=timeframe, range_period="30d")
 
-        # ---------------------------------------------------------------------
-        # 3. Cryptocurrency (BTC, ETH, SOL, etc.)
-        # ---------------------------------------------------------------------
+        # Crypto Fallback (BTC, ETH, etc.)
         is_crypto = any(c in sym for c in ["BTC", "ETH", "SOL", "BNB", "XRP", "USDT"])
         if is_crypto:
             binance_pair = sym if sym.endswith("USDT") else f"{sym}USDT"
-
-            # Primary: Binance Public API (0ms latency)
             df_binance = await self.fetch_binance_direct(binance_pair, interval=timeframe, limit=bars)
             if df_binance is not None and len(df_binance) >= 30:
                 return df_binance
-
-            # Secondary: Bybit Public API
-            df_bybit = await self.fetch_bybit_direct(binance_pair, interval=timeframe, limit=bars)
-            if df_bybit is not None and len(df_bybit) >= 30:
-                return df_bybit
-
-            # Tertiary: Yahoo Finance crypto fallback
             yf_sym = "BTC-USD" if "BTC" in sym else ("ETH-USD" if "ETH" in sym else ("SOL-USD" if "SOL" in sym else f"{sym}-USD"))
             return await self.fetch_yahoo_direct(yf_sym, interval=timeframe, range_period="30d")
 
-        # ---------------------------------------------------------------------
-        # 4. Standard Forex & Instruments Fallback
-        # ---------------------------------------------------------------------
+        # Standard Forex Fallback
         yf_symbol = symbol if ("=" in symbol or "^" in symbol) else f"{symbol}=X"
         df = await self.fetch_yahoo_direct(yf_symbol, interval=timeframe, range_period="30d")
         if df is not None and len(df) > 0:

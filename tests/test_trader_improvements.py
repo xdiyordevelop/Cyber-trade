@@ -290,15 +290,48 @@ class TestTraderImprovements(unittest.TestCase):
         self.assertEqual(self.tracker.closed_signals[0].close_reason, "LIMIT_EXPIRED")
 
     def test_trader_keyboard_layout(self):
-        """Verify the ergonomic 4x2 keyboard structure."""
+        """Verify the ergonomic 5-row keyboard structure including Asset Selection."""
         from src.bot_menu import MAIN_KEYBOARD, DEFAULT_KEYBOARD
         self.assertIn("keyboard", MAIN_KEYBOARD)
         rows = MAIN_KEYBOARD["keyboard"]
-        self.assertEqual(len(rows), 4, "Should have exactly 4 rows for clean mobile view")
-        for row in rows:
-            self.assertEqual(len(row), 2, "Each row should have exactly 2 buttons for balanced symmetry")
+        self.assertEqual(len(rows), 5, "Should have 5 rows including Asset Selection & Help")
+        all_buttons = [btn["text"] for row in rows for btn in row]
+        self.assertIn("🎯 Aktiv Tanlash", all_buttons)
+        self.assertIn("⚡ Signallar", all_buttons)
+        self.assertIn("📊 Bozor & Status", all_buttons)
+        self.assertIn("🔍 Tezkor Tahlil", all_buttons)
+        self.assertIn("🧮 Lot Kalkulyator", all_buttons)
+        self.assertIn("⚙️ Savdo Rejimi", all_buttons)
         self.assertTrue(MAIN_KEYBOARD["resize_keyboard"])
         self.assertTrue(MAIN_KEYBOARD["persistent"])
+
+    def test_asset_selection_menu_and_modes(self):
+        """Verify asset selection menu, broker feed notice, and database switching."""
+        from src.bot_menu import ASSET_MODES, format_asset_menu
+        from src.database import db
+
+        # Test ASSET_MODES configuration
+        self.assertIn("gold", ASSET_MODES)
+        self.assertIn("crypto", ASSET_MODES)
+        self.assertIn("all", ASSET_MODES)
+        self.assertEqual(ASSET_MODES["gold"]["symbols"], ["XAUUSD"])
+        self.assertEqual(ASSET_MODES["crypto"]["symbols"], ["BTCUSDT", "ETHUSDT"])
+        self.assertEqual(ASSET_MODES["all"]["symbols"], ["XAUUSD", "BTCUSDT", "ETHUSDT"])
+
+        # Test format_asset_menu output
+        msg, markup = format_asset_menu("gold")
+        self.assertIn("SIGNALLAR UCHUN AKTIV TANLASH", msg)
+        self.assertIn("XM Broker", msg)
+        callbacks = [btn["callback_data"] for row in markup["inline_keyboard"] for btn in row]
+        self.assertIn("set_assets:gold", callbacks)
+        self.assertIn("set_assets:crypto", callbacks)
+        self.assertIn("set_assets:all", callbacks)
+
+        # Test active asset mode setting in db
+        db.set_setting("active_asset_mode", "crypto")
+        self.assertEqual(db.get_setting("active_asset_mode"), "crypto")
+        db.set_setting("active_asset_mode", "gold")
+        self.assertEqual(db.get_setting("active_asset_mode"), "gold")
 
     def test_lot_numeric_query_detection(self):
         """Verify that trader shorthand numbers are recognized instantly without commands."""

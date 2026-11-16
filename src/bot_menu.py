@@ -38,16 +38,41 @@ SIGNAL_MODES = {
     },
 }
 
+# -----------------------------------------------------------------------------
+# Asset Selection Configuration (User-Controlled Signals)
+# -----------------------------------------------------------------------------
+ASSET_MODES = {
+    "gold": {
+        "id": "gold",
+        "name": "🟡 Faqat Oltin (XAUUSD / GOLD)",
+        "symbols": ["XAUUSD"],
+        "desc": "Faqat Oltin signallari (Asosiy XM Broker 0ms fokusi)",
+    },
+    "crypto": {
+        "id": "crypto",
+        "name": "🪙 Faqat Kripto (Bitcoin & Ethereum)",
+        "symbols": ["BTCUSDT", "ETHUSDT"],
+        "desc": "Faqat BTC va ETH signallari (XM Broker 24/7)",
+    },
+    "all": {
+        "id": "all",
+        "name": "⚡ Barcha Aktivlar (Oltin + Kripto)",
+        "symbols": ["XAUUSD", "BTCUSDT", "ETHUSDT"],
+        "desc": "Oltin va barcha faol Kripto signallari birgalikda",
+    },
+}
+
 
 # -----------------------------------------------------------------------------
-# Modern, Ergonomic Persistent Reply Menu for Traders (4 rows x 2 columns)
+# Modern, Ergonomic Persistent Reply Menu for Traders (5 rows x 2 columns)
 # -----------------------------------------------------------------------------
 MAIN_KEYBOARD: Dict[str, Any] = {
     "keyboard": [
         [{"text": "⚡ Signallar"}, {"text": "📊 Bozor & Status"}],
         [{"text": "🔍 Tezkor Tahlil"}, {"text": "🧮 Lot Kalkulyator"}],
+        [{"text": "🎯 Aktiv Tanlash"}, {"text": "⚙️ Savdo Rejimi"}],
         [{"text": "📰 Yangiliklar"}, {"text": "📈 Statistika"}],
-        [{"text": "⚙️ Savdo Rejimi"}, {"text": "📖 Qo'llanma"}],
+        [{"text": "📖 Qo'llanma"}],
     ],
     "resize_keyboard": True,
     "persistent": True,
@@ -143,6 +168,29 @@ def format_analyze_menu() -> Tuple[str, Dict[str, Any]]:
             [
                 {"text": "❓ Nega BTCda Signal Yo'q? (Audit)", "callback_data": "why:BTCUSDT"},
             ],
+        ]
+    }
+    return msg, markup
+
+
+def format_asset_menu(current_asset_mode: str = "gold") -> Tuple[str, Dict[str, Any]]:
+    """Generate 1-tap interactive asset selection menu (Gold only, Crypto only, or All)."""
+    cfg = ASSET_MODES.get(current_asset_mode, ASSET_MODES["gold"])
+    msg = (
+        "🎯 <b>CYBER TRADE — SIGNALLAR UCHUN AKTIV TANLASH</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Hozirgi faol tanlov: <b>{cfg['name']}</b>\n"
+        f"📊 <b>Kuzatilayotgan Tikerlar:</b> <code>{', '.join(cfg['symbols'])}</code>\n"
+        f"ℹ️ <i>{cfg['desc']}</i>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Barcha narx va shamlar to'g'ridan-to'g'ri <b>XM Broker (MT5)</b> dan 0 ms kechikish bilan olinadi.\n\n"
+        "Qaysi aktivlar bo'yicha signal olmoqchisiz? Quyidagi tugmalardan birini bosing:"
+    )
+    markup = {
+        "inline_keyboard": [
+            [{"text": f"{'✅ ' if current_asset_mode == 'gold' else ''}🟡 1. Faqat Oltin (XAUUSD / GOLD)", "callback_data": "set_assets:gold"}],
+            [{"text": f"{'✅ ' if current_asset_mode == 'crypto' else ''}🪙 2. Faqat Kripto (BTC & ETH)", "callback_data": "set_assets:crypto"}],
+            [{"text": f"{'✅ ' if current_asset_mode == 'all' else ''}⚡ 3. Barcha Aktivlar (Oltin + Kripto)", "callback_data": "set_assets:all"}],
         ]
     }
     return msg, markup

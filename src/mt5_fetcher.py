@@ -75,6 +75,7 @@ class MetaTrader5Fetcher:
         self.server = server or os.getenv("MT5_SERVER", "XMGlobal-MT5 5")
         self.path = path or os.getenv("MT5_PATH", r"C:\Program Files\MetaTrader 5\terminal64.exe")
         self.active_gold_symbol: Optional[str] = None
+        self.symbol_cache: Dict[str, str] = {}
         self._is_initialized = False
 
     @property
@@ -119,59 +120,78 @@ class MetaTrader5Fetcher:
             acc_info = mt5.account_info()
             if acc_info:
                 logger.info(
-                    f"✅ MetaTrader 5 connected to broker: {acc_info.company} "
+                    f"✅ MetaTrader 5 connected to XM broker: {acc_info.company} "
                     f"(Server: {acc_info.server}, Login: {acc_info.login}, Currency: {acc_info.currency})"
                 )
             else:
                 logger.info("MetaTrader 5 terminal attached successfully.")
 
-            # Identify active gold symbol on this broker
-            self.find_gold_symbol()
             return True
 
         except Exception as e:
             logger.warning(f"Error during MetaTrader 5 initialization: {e}")
             return False
 
-    def find_gold_symbol(self) -> str:
+    def resolve_symbol(self, symbol: str) -> str:
         """
-        Detect the exact gold ticker symbol used by the connected broker (e.g. GOLD, XAUUSD, GOLD#).
+        Dynamically map standard tickers (XAUUSD, BTCUSDT, ETHUSDT) to exact XM broker symbols.
+        Supports:
+        - Gold: GOLD, GOLD#, GOLDmicro, XAUUSD, XAUUSDm
+        - Bitcoin: BTCUSD, BTCUSD#, BTCUSDmicro, BTCUSDT
+        - Ethereum: ETHUSD, ETHUSD#, ETHUSDmicro, ETHUSDT
+        - Solana: SOLUSD, SOLUSD#
         """
-        if self.active_gold_symbol:
-            return self.active_gold_symbol
-
-        candidates = ["GOLD", "XAUUSD", "GOLD#", "GOLDmicro", "XAUUSDm", "XAUUSD.", "GOLD."]
+        raw = symbol.upper().replace("/", "").replace("-", "")
+        if raw in self.symbol_cache:
+            return self.symbol_cache[raw]
 
         if not self.is_available or not self._is_initialized:
-            self.active_gold_symbol = "GOLD"
-            return "GOLD"
+            fallback = "GOLD" if ("XAU" in raw or "GOLD" in raw) else ("BTCUSD" if "BTC" in raw else ("ETHUSD" if "ETH" in raw else raw))
+            return fallback
+
+        # Candidate mapping per asset class
+        if "XAU" in raw or "GOLD" in raw:
+            candidates = ["GOLD", "XAUUSD", "GOLD#", "GOLDmicro", "XAUUSDm", "XAUUSD.", "GOLD."]
+        elif "BTC" in raw:
+            candidates = ["BTCUSD", "BTCUSD#", "BTCUSDmicro", "BTCUSDT", "BTCUSD.", "BITCOIN"]
+        elif "ETH" in raw:
+            candidates = ["ETHUSD", "ETHUSD#", "ETHUSDmicro", "ETHUSDT", "ETHUSD.", "ETHEREUM"]
+        elif "SOL" in raw:
+            candidates = ["SOLUSD", "SOLUSD#", "SOLUSDmicro", "SOLUSDT"]
+        else:
+            candidates = [raw, f"{raw}#", f"{raw}m", f"{raw}.", f"{raw}micro"]
 
         try:
-            # Check candidate symbols first
-            for sym in candidates:
-                info = mt5.symbol_info(sym)
+            # 1. Test candidate list against broker
+            for cand in candidates:
+                info = mt5.symbol_info(cand)
                 if info is not None:
-                    mt5.symbol_select(sym, True)
-                    self.active_gold_symbol = sym
-                    logger.info(f"Detected active broker Gold symbol: '{sym}'")
-                    return sym
+                    mt5.symbol_select(cand, True)
+                    self.symbol_cache[raw] = cand
+                    logger.info(f"Resolved XM Broker symbol: '{raw}' -> '{cand}'")
+                    return cand
 
-            # Search all available symbols containing GOLD or XAU
+            # 2. Search all broker symbols by substring
+            search_key = "GOLD" if ("XAU" in raw or "GOLD" in raw) else ("BTC" if "BTC" in raw else ("ETH" if "ETH" in raw else raw))
             symbols = mt5.symbols_get()
             if symbols:
                 for s in symbols:
-                    s_name = s.name.upper()
-                    if "GOLD" in s_name or "XAU" in s_name:
+                    if search_key in s.name.upper():
                         mt5.symbol_select(s.name, True)
-                        self.active_gold_symbol = s.name
-                        logger.info(f"Discovered broker Gold symbol: '{s.name}'")
+                        self.symbol_cache[raw] = s.name
+                        logger.info(f"Discovered XM Broker symbol: '{raw}' -> '{s.name}'")
                         return s.name
 
         except Exception as e:
-            logger.debug(f"Error resolving gold symbol from MT5: {e}")
+            logger.debug(f"Error resolving XM symbol for {raw}: {e}")
 
-        self.active_gold_symbol = "GOLD"
-        return "GOLD"
+        default_sym = "GOLD" if ("XAU" in raw or "GOLD" in raw) else ("BTCUSD" if "BTC" in raw else raw)
+        self.symbol_cache[raw] = default_sym
+        return default_sym
+
+    def find_gold_symbol(self) -> str:
+        """Backward compatibility for gold resolution."""
+        return self.resolve_symbol("XAUUSD")
 
     def get_market_data(
         self,
@@ -180,7 +200,7 @@ class MetaTrader5Fetcher:
         bars: int = 500,
     ) -> Optional[Any]:
         """
-        Fetch OHLCV historical candle series directly from broker via MT5.
+        Fetch OHLCV historical candle series directly from XM broker via MT5 (0ms latency).
         Returns a Polars DataFrame with columns: [time, open, high, low, close, volume].
         """
         if not self.is_available:
@@ -190,12 +210,7 @@ class MetaTrader5Fetcher:
             if not self.initialize():
                 return None
 
-        # Resolve broker symbol
-        sym = symbol.upper()
-        if "XAU" in sym or "GOLD" in sym:
-            broker_sym = self.find_gold_symbol()
-        else:
-            broker_sym = sym
+        broker_sym = self.resolve_symbol(symbol)
 
         # Timeframe mapping
         tf_map = {
@@ -243,11 +258,11 @@ class MetaTrader5Fetcher:
             return None
 
     def get_live_tick(self, symbol: str = "XAUUSD") -> Optional[Dict[str, float]]:
-        """Get live bid, ask, and spread directly from broker."""
+        """Get live bid, ask, and spread directly from XM broker."""
         if not self.is_available or not self._is_initialized:
             return None
 
-        broker_sym = self.find_gold_symbol() if ("XAU" in symbol.upper() or "GOLD" in symbol.upper()) else symbol
+        broker_sym = self.resolve_symbol(symbol)
         try:
             tick = mt5.symbol_info_tick(broker_sym)
             if tick is not None:

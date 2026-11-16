@@ -96,11 +96,18 @@ class CyberTradeOrchestrator:
         """Continuous market monitoring and signal generation loop."""
         logger.info("Market Monitoring Loop is active...")
 
-        symbols = self.config.market.symbols
         dxy_symbol = self.config.market.dxy_symbol
 
         while self._running:
             try:
+                # Dynamically retrieve active symbols based on user selection in Telegram menu
+                active_asset_mode = db.get_setting("active_asset_mode", "gold")
+                from src.bot_menu import ASSET_MODES
+                if active_asset_mode in ASSET_MODES:
+                    symbols = ASSET_MODES[active_asset_mode]["symbols"]
+                else:
+                    symbols = self.config.market.symbols
+
                 # 1. Fetch Macro DXY data first
                 dxy_df = await self.data_fetcher.get_market_data(dxy_symbol, timeframe="15m")
 
