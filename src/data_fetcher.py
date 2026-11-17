@@ -39,6 +39,10 @@ class UniversalDataFetcher:
             "Accept": "application/json, text/plain, */*",
         }
 
+    def _create_session(self, timeout: Optional[aiohttp.ClientTimeout] = None) -> aiohttp.ClientSession:
+        connector = aiohttp.TCPConnector(ssl=False)
+        return aiohttp.ClientSession(connector=connector, timeout=timeout or self.timeout, headers=self.headers)
+
     # -------------------------------------------------------------------------
     # 1. Direct Binance Public REST API (Crypto: BTC, ETH, SOL)
     # -------------------------------------------------------------------------
@@ -71,7 +75,7 @@ class UniversalDataFetcher:
         fast_timeout = aiohttp.ClientTimeout(total=4.0, sock_connect=2.5)
         for url in endpoints:
             try:
-                async with aiohttp.ClientSession(timeout=fast_timeout, headers=self.headers) as session:
+                async with self._create_session(timeout=fast_timeout) as session:
                     async with session.get(url) as resp:
                         if resp.status != 200:
                             continue
@@ -131,7 +135,7 @@ class UniversalDataFetcher:
         url = f"https://api.bybit.com/v5/market/kline?category=spot&symbol={clean_symbol}&interval={bybit_interval}&limit={limit}"
 
         try:
-            async with aiohttp.ClientSession(timeout=self.timeout, headers=self.headers) as session:
+            async with self._create_session() as session:
                 async with session.get(url) as resp:
                     if resp.status != 200:
                         return None
@@ -205,7 +209,7 @@ class UniversalDataFetcher:
             data = None
             for url in endpoints:
                 try:
-                    async with aiohttp.ClientSession(timeout=self.timeout, headers=self.headers) as session:
+                    async with self._create_session() as session:
                         async with session.get(url) as resp:
                             if resp.status == 200:
                                 data = await resp.json()

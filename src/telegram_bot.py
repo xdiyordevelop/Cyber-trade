@@ -343,7 +343,7 @@ class CyberTelegramBot:
                 content_type="image/png",
             )
 
-            async with aiohttp.ClientSession() as session:
+            async with self._create_session() as session:
                 async with session.post(url, data=data) as resp:
                     if resp.status == 200:
                         return True
