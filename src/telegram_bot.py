@@ -101,8 +101,8 @@ class CyberTelegramBot:
             gold_status = "🟡 Dam olish kuni (Bozor dushanbagacha yopiq)"
             operational.append("Spot Oltin (XAUUSD=X) — Dam olish kunida tinch")
         else:
-            gold_status = "🟢 ONLAYN (Spot XAUUSD=X oqimi faol)"
-            operational.append("Spot Oltin (XAUUSD=X) narx oqimi")
+            gold_status = "🟢 ONLAYN (MT5 / Binance 0ms oqimi faol)"
+            operational.append("Oltin (MT5 / Binance 0ms) narx oqimi")
 
         # Check Economic Calendar (News Sentinel)
         news_online = True

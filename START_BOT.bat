@@ -9,10 +9,12 @@ echo.
 
 set PYTHON_CMD=
 
-if exist "..\xaubot-ai\.venv\Scripts\python.exe" (
-    set PYTHON_CMD="..\xaubot-ai\.venv\Scripts\python.exe"
+if exist "C:\Program Files\Python311\python.exe" (
+    set PYTHON_CMD="C:\Program Files\Python311\python.exe"
 ) else if exist "%LOCALAPPDATA%\Programs\Python\Python311\python.exe" (
     set PYTHON_CMD="%LOCALAPPDATA%\Programs\Python\Python311\python.exe"
+) else if exist "..\xaubot-ai\.venv\Scripts\python.exe" (
+    set PYTHON_CMD="..\xaubot-ai\.venv\Scripts\python.exe"
 ) else (
     set PYTHON_CMD=python
 )

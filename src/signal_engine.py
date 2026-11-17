@@ -239,8 +239,16 @@ class SignalEngine:
         is_crypto = any(c in symbol.upper() for c in ["BTC", "ETH", "SOL", "USDT"])
         is_weekend = self.session_filter.is_weekend()
 
+        from src.data_fetcher import mt5_fetcher
+        if mt5_fetcher and mt5_fetcher.is_available:
+            feed_source = "Direct XM Broker (MT5)"
+        elif is_crypto or "XAU" in symbol.upper() or "GOLD" in symbol.upper():
+            feed_source = "Binance Direct (0ms Real-Time)"
+        else:
+            feed_source = "Yahoo Finance Direct / Live"
+
         meta = {
-            "source": "Yahoo Finance Direct / Live",
+            "source": feed_source,
             "last_candle_time": last_dt.strftime("%Y-%m-%d %H:%M UTC"),
             "age_minutes": round(age_minutes, 1),
             "is_weekend": is_weekend,

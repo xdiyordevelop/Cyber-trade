@@ -303,14 +303,32 @@ class UniversalDataFetcher:
         # ---------------------------------------------------------------------
         # 2. Resilient Offline/Container Fallbacks (Only when MT5 is not attached)
         # ---------------------------------------------------------------------
-        # Pure Real Gold (COMEX GC=F / Spot Gold XAUUSD)
+        # Pure Real Gold (Binance 0ms PAX Gold / COMEX GC=F / Spot Gold XAUUSD)
         if "XAU" in sym or "GOLD" in sym:
-            # Single exact real Gold source: COMEX Gold Futures (GC=F) - matches MT5 spot price
+            # 1. Real-time 0ms Spot Gold Feed via Binance (PAXGUSDT - 1:1 London Physical Gold)
+            # Solves Render/Linux 15-minute delayed candle issues completely!
+            try:
+                df_paxg = await self.fetch_binance_direct("PAXGUSDT", interval=timeframe, limit=bars)
+                if df_paxg is not None and len(df_paxg) >= 30:
+                    logger.debug(f"Using Direct Binance 0ms Real-Time Gold feed (PAXGUSDT) for {sym}")
+                    return df_paxg
+            except Exception as e:
+                logger.debug(f"Binance PAXG fetch error: {e}")
+
+            # 2. Real-time 0ms Bybit failover for PAXGUSDT
+            try:
+                df_bybit = await self.fetch_bybit_direct("PAXGUSDT", interval=timeframe, limit=bars)
+                if df_bybit is not None and len(df_bybit) >= 30:
+                    logger.debug(f"Using Direct Bybit 0ms Real-Time Gold feed (PAXGUSDT) for {sym}")
+                    return df_bybit
+            except Exception as e:
+                logger.debug(f"Bybit PAXG fetch error: {e}")
+
+            # 3. Yahoo Finance Fallbacks (COMEX Gold Futures GC=F / Spot Gold XAUUSD=X)
             df_gold = await self.fetch_yahoo_direct("GC=F", interval=timeframe, range_period="30d")
             if df_gold is not None and len(df_gold) >= 30:
                 return df_gold
 
-            # Secondary real spot gold ticker if GC=F is unavailable
             return await self.fetch_yahoo_direct("XAUUSD=X", interval=timeframe, range_period="30d")
 
         # Dollar Index (DXY)
