@@ -74,6 +74,13 @@ class CyberTelegramBot:
         self._running = False
         self._latest_context: Dict[str, Any] = {}
 
+    def _create_session(self, timeout: Optional[aiohttp.ClientTimeout] = None) -> aiohttp.ClientSession:
+        """Create a resilient HTTP session with SSL verification bypass for Windows Server."""
+        connector = aiohttp.TCPConnector(ssl=False)
+        if timeout:
+            return aiohttp.ClientSession(connector=connector, timeout=timeout)
+        return aiohttp.ClientSession(connector=connector)
+
     def set_latest_context(self, ctx: Dict[str, Any]):
         """Cache latest market analysis context for the AI chat assistant."""
         self._latest_context.update(ctx)
@@ -281,7 +288,7 @@ class CyberTelegramBot:
             payload["reply_markup"] = markup
 
         try:
-            async with aiohttp.ClientSession() as session:
+            async with self._create_session() as session:
                 async with session.post(url, json=payload) as resp:
                     if resp.status == 200:
                         return True
@@ -391,7 +398,7 @@ class CyberTelegramBot:
             payload["text"] = text
             payload["show_alert"] = show_alert
         try:
-            async with aiohttp.ClientSession() as session:
+            async with self._create_session() as session:
                 async with session.post(url, json=payload) as resp:
                     return resp.status == 200
         except Exception as e:
@@ -420,7 +427,7 @@ class CyberTelegramBot:
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
         try:
-            async with aiohttp.ClientSession() as session:
+            async with self._create_session() as session:
                 async with session.post(url, json=payload) as resp:
                     return resp.status == 200
         except Exception as e:
@@ -1129,7 +1136,7 @@ class CyberTelegramBot:
             {"command": "help", "description": "📖 To'liq yo'riqnoma"},
         ]
         try:
-            async with aiohttp.ClientSession() as session:
+            async with self._create_session() as session:
                 async with session.post(url, json={"commands": commands}) as resp:
                     if resp.status == 200:
                         logger.info("Telegram command menu registered successfully.")
@@ -1173,7 +1180,7 @@ class CyberTelegramBot:
 
             try:
                 timeout = aiohttp.ClientTimeout(total=25)
-                async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with self._create_session(timeout=timeout) as session:
                     async with session.get(url, params=params) as resp:
                         if resp.status == 200:
                             data = await resp.json()

@@ -133,7 +133,8 @@ class NewsSentinel:
 
         for url in self.calendar_urls:
             try:
-                async with aiohttp.ClientSession(timeout=timeout, headers=self.headers) as session:
+                connector = aiohttp.TCPConnector(ssl=False)
+                async with aiohttp.ClientSession(timeout=timeout, headers=self.headers, connector=connector) as session:
                     async with session.get(url) as resp:
                         if resp.status == 200:
                             data = await resp.json()

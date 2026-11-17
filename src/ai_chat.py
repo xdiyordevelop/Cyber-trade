@@ -268,7 +268,8 @@ class MarketAIAssistant:
 
         try:
             timeout = aiohttp.ClientTimeout(total=timeout_seconds)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            connector = aiohttp.TCPConnector(ssl=False)
+            async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
                 async with session.post(url, json=payload) as resp:
                     if resp.status == 200:
                         data = await resp.json()
@@ -320,7 +321,8 @@ class MarketAIAssistant:
 
         try:
             timeout = aiohttp.ClientTimeout(total=timeout_seconds)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            connector = aiohttp.TCPConnector(ssl=False)
+            async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
                 async with session.post(self.groq_base_url, headers=headers, json=payload) as resp:
                     if resp.status == 200:
                         data = await resp.json()
